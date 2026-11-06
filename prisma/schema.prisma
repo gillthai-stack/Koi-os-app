@@ -36,11 +36,27 @@ enum Stamp {
   FEDERAL
 }
 
-// Per-product ordering settings that Shopify doesn't hold.
-model ProductSetting {
-  productId  String   @id // Shopify product GID
+enum Role {
+  OWNER
+  STAFF
+}
+
+// People who can sign in to the KOI//OS web app. Created by the owner.
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  displayName  String
+  passwordHash String
+  role         Role     @default(STAFF)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
+
+// Per-item ordering settings that Shopify doesn't hold (one row per variant).
+model VariantSetting {
+  variantId  String   @id // Shopify product variant GID
   cartonSize Int      @default(5) // pieces per carton
-  stamp      Stamp
+  stamp      Stamp?
   updatedAt  DateTime @updatedAt
   updatedBy  String?
 }

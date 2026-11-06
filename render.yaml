@@ -23,3 +23,9 @@ services:
         value: read_products,read_inventory,read_orders,read_locations
       - key: DATABASE_URL
         sync: false
+      - key: SHOP
+        value: vaping-koi.myshopify.com
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: SETUP_CODE
+        generateValue: true
