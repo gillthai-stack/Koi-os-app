@@ -35,6 +35,9 @@ export default function Login() {
         <button className="btn primary" type="submit" disabled={busy}>
           {busy ? "Checking…" : "Log in"}
         </button>
+        <a href="/setup" className="muted" style={{ fontSize: 13, textAlign: "center" }}>
+          Owner: set up or recover with the setup code
+        </a>
       </Form>
     </Gate>
   );

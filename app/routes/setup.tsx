@@ -1,6 +1,6 @@
-// First run only: creates the owner account. Needs the SETUP_CODE from Render.
+// Creates the first owner, or recovers an owner login later. Needs the SETUP_CODE from Render.
 import type { ActionFunctionArgs, MetaFunction } from "react-router";
-import { Form, redirect, useActionData } from "react-router";
+import { Form, useActionData, useLoaderData } from "react-router";
 import { timingSafeEqual } from "node:crypto";
 import prisma from "../db.server";
 import { Gate } from "../components/Shell";
@@ -8,10 +8,7 @@ import { checkNewUser, cleanUsername, hashPassword, startSession } from "../lib/
 
 export const meta: MetaFunction = () => [{ title: "Set up · KOI//OS" }];
 
-export const loader = async () => {
-  if ((await prisma.user.count()) > 0) throw redirect("/login");
-  return null;
-};
+export const loader = async () => ({ firstRun: (await prisma.user.count()) === 0 });
 
 function codeMatches(given: string): boolean {
   const want = process.env.SETUP_CODE ?? "";
@@ -20,7 +17,6 @@ function codeMatches(given: string): boolean {
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  if ((await prisma.user.count()) > 0) throw redirect("/login");
   const form = await request.formData();
   if (!codeMatches(String(form.get("code") ?? "").trim())) {
     return { error: "That setup code doesn't match SETUP_CODE in Render." };
@@ -30,16 +26,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const displayName = String(form.get("displayName") ?? "").trim() || username;
   const problem = checkNewUser(username, password);
   if (problem) return { error: problem };
-  const user = await prisma.user.create({
-    data: { username, displayName, passwordHash: await hashPassword(password), role: "OWNER" },
+  // An existing username gets the new password and owner access back.
+  const passwordHash = await hashPassword(password);
+  const user = await prisma.user.upsert({
+    where: { username },
+    create: { username, displayName, passwordHash, role: "OWNER" },
+    update: { displayName, passwordHash, role: "OWNER", active: true },
   });
   return startSession(user.id);
 };
 
 export default function Setup() {
+  const { firstRun } = useLoaderData<typeof loader>();
   const data = useActionData<typeof action>();
   return (
-    <Gate title="Create the owner login">
+    <Gate title={firstRun ? "Create the owner login" : "Recover an owner login"}>
       <Form method="post" className="stack">
         <input className="field" name="code" placeholder="Setup code (from Render)" autoComplete="off" required />
         <input className="field" name="displayName" placeholder="Your name" required />
