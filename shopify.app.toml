@@ -1,9 +1,11 @@
-# This file stores configurations for your Shopify app.
+# KOI//OS app configuration. client_id is filled in by `shopify app config link`.
+name = "KOI//OS"
 client_id = ""
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products"
+# Read-only: KOI//OS never changes products, stock or orders in Shopify.
+scopes = "read_products,read_inventory,read_orders,read_locations"
 
 [webhooks]
 api_version = "2026-10"
@@ -31,31 +33,3 @@ api_version = "2026-10"
   # [[webhooks.subscriptions]]
   # uri = "/webhooks/shop/redact"
   # compliance_topics = ["shop/redact"]
-
-# Only receive Events when a variant's price changes and the product status is active.
-# See: https://shopify.dev/docs/apps/build/events-webhooks
-[events]
-api_version = "2026-10"
-
-  [[events.subscription]]
-  handle = "product-price-change"
-  topic = "Product"
-  actions = ["update"]
-  triggers = ["product.variants.price", "product.variants.compareAtPrice"]
-  uri = "/webhooks/products/update"
-  query = """
-  query product_variant_price_change($productId: ID!, $variantsId: ID!) {
-    product(id: $productId) {
-      id
-      title
-      status
-    }
-    productVariant(id: $variantsId) {
-      id
-      title
-      price
-      compareAtPrice
-    }
-  }
-  """
-  query_filter = "product.status:'ACTIVE'"
