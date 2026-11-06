@@ -1,6 +1,7 @@
 // Reads live sales and stock from Shopify for the KOI//OS reorder table.
 // Uses the offline token stored when the KOI OS Shopify app was installed.
 import prisma from "../db.server";
+import { DISTRIBUTOR_SITES } from "./distributors";
 import { unauthenticated } from "../shopify.server";
 import {
   NEW_ITEM_WINDOW_DAYS,
@@ -157,7 +158,12 @@ export type ReorderRow = {
   kind: "top" | "new";
   rank: number | null;
   name: string;
+  /** Shopify vendor on the product. */
+  vendor: string;
+  /** Who we order it from (the vendor unless a link says otherwise). */
   distributor: string;
+  /** Ordering site, or null when nobody has linked one yet. */
+  siteUrl: string | null;
   sold30: number;
   stock: number;
   daysLeft: number | null;
@@ -187,6 +193,8 @@ export async function loadReorderTable(store: StoreKey) {
   const ids = [...top, ...newOnes.map((v) => v.id)];
   const settings = await prisma.variantSetting.findMany({ where: { variantId: { in: ids } } });
   const settingOf = new Map(settings.map((s) => [s.variantId, s]));
+  const links = await prisma.distributorLink.findMany();
+  const linkOf = new Map(links.map((l) => [l.vendor, l]));
 
   const row = (v: VariantInfo, kind: "top" | "new", rank: number | null): ReorderRow => {
     const s = settingOf.get(v.id);
@@ -199,7 +207,9 @@ export async function loadReorderTable(store: StoreKey) {
       kind,
       rank,
       name: v.name,
-      distributor: v.vendor,
+      vendor: v.vendor,
+      distributor: linkOf.get(v.vendor)?.distributor ?? v.vendor,
+      siteUrl: linkOf.get(v.vendor)?.url ?? DISTRIBUTOR_SITES[v.vendor] ?? null,
       sold30,
       stock,
       daysLeft: r.daysLeft,
@@ -229,5 +239,22 @@ export async function saveVariantSetting(
     where: { variantId },
     create: { variantId, cartonSize: cartonSize ?? 5, stamp: change.stamp ?? null, updatedBy },
     update: { ...(cartonSize ? { cartonSize } : {}), ...(change.stamp ? { stamp: change.stamp } : {}), updatedBy },
+  });
+}
+
+export function cleanSiteUrl(raw: string): string | null {
+  try {
+    const u = new URL(raw.trim().match(/^https?:\/\//i) ? raw.trim() : `https://${raw.trim()}`);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveDistributorLink(vendor: string, distributor: string, url: string, updatedBy: string) {
+  await prisma.distributorLink.upsert({
+    where: { vendor },
+    create: { vendor, distributor, url, updatedBy },
+    update: { distributor, url, updatedBy },
   });
 }

@@ -60,3 +60,12 @@ model VariantSetting {
   updatedAt  DateTime @updatedAt
   updatedBy  String?
 }
+
+// Maps a Shopify vendor to the distributor we order it from and that distributor's ordering site.
+model DistributorLink {
+  vendor      String   @id // Shopify product vendor
+  distributor String
+  url         String
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+}

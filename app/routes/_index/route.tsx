@@ -1,13 +1,20 @@
 // KOI//OS reorder page: top 30 sellers per store, filtered to what needs ordering,
 // with an order sheet grouped by distributor (GCore split by stamp).
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction, ShouldRevalidateFunction } from "react-router";
 import { Link, useFetcher, useLoaderData, useNavigation } from "react-router";
 import { Hero, Shell } from "../../components/Shell";
 import { requireUser } from "../../lib/auth.server";
 import { DISTRIBUTOR_SITES } from "../../lib/distributors";
 import { STORES, buildOrderSheet, cartonsFor, nextCartonSize, type Stamp, type StoreKey } from "../../lib/ordering";
-import { ShopifyNotConnected, loadReorderTable, saveVariantSetting, type ReorderRow } from "../../lib/stock.server";
+import {
+  ShopifyNotConnected,
+  cleanSiteUrl,
+  loadReorderTable,
+  saveDistributorLink,
+  saveVariantSetting,
+  type ReorderRow,
+} from "../../lib/stock.server";
 
 export const meta: MetaFunction = () => [{ title: "Reorder · KOI//OS" }];
 
@@ -31,6 +38,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const user = await requireUser(request);
   const form = await request.formData();
+  if (form.get("intent") === "link") {
+    const vendor = String(form.get("vendor") ?? "").trim();
+    const distributor = String(form.get("distributor") ?? "").trim() || vendor;
+    const url = cleanSiteUrl(String(form.get("url") ?? ""));
+    if (!vendor || !url) return { ok: false, error: "Add a working website link." };
+    await saveDistributorLink(vendor, distributor, url, user.username);
+    return { ok: true, vendor, distributor, url };
+  }
   const variantId = String(form.get("variantId") ?? "");
   if (!variantId.startsWith("gid://shopify/ProductVariant/")) return { ok: false };
   const stamp = form.get("stamp");
@@ -59,6 +74,7 @@ const FILTERS: { key: Filter; label: string }[] = [
 ];
 
 type Override = { stamp?: Stamp; cartonSize?: number };
+type LinkOverride = { distributor: string; url: string };
 
 function useSavedOrder(store: StoreKey) {
   const key = `koi-order-${store}`;
@@ -90,6 +106,7 @@ export default function Reorder() {
   const fetcher = useFetcher();
   const [filter, setFilter] = useState<Filter>("needs");
   const [over, setOver] = useState<Record<string, Override>>({});
+  const [linked, setLinked] = useState<Record<string, LinkOverride>>({});
   const [qty, setQty] = useSavedOrder(data.store);
   const loading = nav.state === "loading";
 
@@ -98,9 +115,17 @@ export default function Reorder() {
       data.rows.map((r) => {
         const o = over[r.variantId] ?? {};
         const cartonSize = o.cartonSize ?? r.cartonSize;
-        return { ...r, stamp: o.stamp ?? r.stamp, cartonSize, suggestedCartons: cartonsFor(r.needPcs, cartonSize) };
+        const link = linked[r.vendor];
+        return {
+          ...r,
+          stamp: o.stamp ?? r.stamp,
+          cartonSize,
+          suggestedCartons: cartonsFor(r.needPcs, cartonSize),
+          distributor: link?.distributor ?? r.distributor,
+          siteUrl: link?.url ?? r.siteUrl,
+        };
       }),
-    [data.rows, over],
+    [data.rows, over, linked],
   );
 
   const top = rows.filter((r) => r.kind === "top");
@@ -119,6 +144,14 @@ export default function Reorder() {
       .map((r) => ({ variantId: r.variantId, name: r.name, distributor: r.distributor, stamp: r.stamp, cartons: qty[r.variantId] })),
   );
   const totalCartons = sheet.reduce((n, g) => n + g.cartons, 0);
+  const siteOf = new Map(rows.filter((r) => r.siteUrl).map((r) => [r.distributor, r.siteUrl as string]));
+
+  // Vendors with something to order but no ordering site yet: ask for one.
+  const unlinked = new Map<string, number>();
+  for (const r of rows) {
+    const wanted = (r.kind === "top" && r.status !== "OK") || (qty[r.variantId] ?? 0) > 0;
+    if (wanted && !r.siteUrl) unlinked.set(r.vendor, (unlinked.get(r.vendor) ?? 0) + 1);
+  }
 
   const bump = (id: string, d: number) => {
     const n = Math.max(0, (qty[id] ?? 0) + d);
@@ -172,6 +205,25 @@ export default function Reorder() {
 
       {!data.problem && (
         <>
+          {unlinked.size > 0 && (
+            <section className="card on-note">
+              <div className="card-head">
+                <h2 className="h" style={{ margin: 0, fontSize: 18 }}>
+                  Where do these come from?
+                </h2>
+                <span className="idx">{unlinked.size} TO LINK</span>
+              </div>
+              <p className="muted" style={{ fontSize: 14 }}>
+                These need reordering but have no distributor site linked. Add where you order them and it’s saved for everyone.
+              </p>
+              <div className="stack">
+                {[...unlinked.entries()].map(([vendor, count]) => (
+                  <LinkForm key={vendor} vendor={vendor} count={count} onSaved={(l) => setLinked((m) => ({ ...m, [vendor]: l }))} />
+                ))}
+              </div>
+            </section>
+          )}
+
           <div className="tiles">
             <Tile label="Top sellers" value={top.length} tone="glow-c" kanji="売" />
             <Tile label="Out of stock" value={out.length} tone="glow-m" kanji="無" />
@@ -218,7 +270,10 @@ export default function Reorder() {
                           <td className="mono muted">{r.rank ?? <span className="pill new">NEW</span>}</td>
                           <td style={{ minWidth: 220 }}>
                             <div style={{ fontWeight: 600 }}>{r.name}</div>
-                            <div className="muted" style={{ fontSize: 12 }}>{r.distributor}</div>
+                            <div className="muted" style={{ fontSize: 12 }}>
+                              {r.distributor}
+                              {!r.siteUrl && <span className="pill warn" style={{ marginLeft: 6, fontSize: 10, padding: "1px 6px" }}>NO DISTRO LINK</span>}
+                            </div>
                           </td>
                           <td className="mono">{r.sold30}</td>
                           <td className="mono" style={{ whiteSpace: "nowrap" }}>
@@ -260,7 +315,7 @@ export default function Reorder() {
               )}
             </section>
 
-            <OrderSheet sheet={sheet} total={totalCartons} store={storeLabel} />
+            <OrderSheet sheet={sheet} total={totalCartons} store={storeLabel} siteOf={siteOf} />
           </div>
         </>
       )}
@@ -285,7 +340,51 @@ function StatusPill({ status }: { status: ReorderRow["status"] }) {
   return <span className="pill ok">OK</span>;
 }
 
-function OrderSheet({ sheet, total, store }: { sheet: ReturnType<typeof buildOrderSheet>; total: number; store: string }) {
+function LinkForm({ vendor, count, onSaved }: { vendor: string; count: number; onSaved: (l: LinkOverride) => void }) {
+  const fetcher = useFetcher<typeof action>();
+  const res = fetcher.data;
+  const handled = useRef<unknown>(null);
+  useEffect(() => {
+    if (!res || handled.current === res) return;
+    handled.current = res;
+    if ("url" in res && res.url && res.vendor === vendor) onSaved({ distributor: res.distributor, url: res.url });
+  }, [res, vendor, onSaved]);
+  return (
+    <fetcher.Form method="post" className="inline-form sheet-group">
+      <input type="hidden" name="intent" value="link" />
+      <input type="hidden" name="vendor" value={vendor} />
+      <div style={{ flex: "1 1 160px", minWidth: 0 }}>
+        <div style={{ fontWeight: 600 }}>{vendor}</div>
+        <div className="muted" style={{ fontSize: 12 }}>
+          {count} item{count === 1 ? "" : "s"} to order
+        </div>
+      </div>
+      <input className="field" name="distributor" list="koi-distros" placeholder="Distributor (e.g. Valor Distributions)" defaultValue={vendor} />
+      <input className="field" name="url" placeholder="Ordering site link" inputMode="url" required />
+      <button className="btn primary" type="submit" disabled={fetcher.state !== "idle"}>
+        {fetcher.state !== "idle" ? "Saving…" : "Save"}
+      </button>
+      {res && "error" in res && res.error && <p className="err" style={{ flexBasis: "100%" }}>{res.error}</p>}
+      <datalist id="koi-distros">
+        {Object.keys(DISTRIBUTOR_SITES).map((d) => (
+          <option key={d} value={d} />
+        ))}
+      </datalist>
+    </fetcher.Form>
+  );
+}
+
+function OrderSheet({
+  sheet,
+  total,
+  store,
+  siteOf,
+}: {
+  sheet: ReturnType<typeof buildOrderSheet>;
+  total: number;
+  store: string;
+  siteOf: Map<string, string>;
+}) {
   const [copied, setCopied] = useState(false);
   const text = [
     `KOI//OS order · ${store}`,
@@ -324,8 +423,8 @@ function OrderSheet({ sheet, total, store }: { sheet: ReturnType<typeof buildOrd
                     {g.stamp && <> · <span className={g.stamp === "ONTARIO" ? "glow-ont" : "glow-fed"}>{g.stamp === "ONTARIO" ? "Ontario" : "Federal"} checkout</span></>}
                   </div>
                 </div>
-                {DISTRIBUTOR_SITES[g.distributor] && (
-                  <a className="btn pink" href={DISTRIBUTOR_SITES[g.distributor]} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", textDecoration: "none" }}>
+                {siteOf.get(g.distributor) && (
+                  <a className="btn pink" href={siteOf.get(g.distributor)} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", textDecoration: "none" }}>
                     Open site
                   </a>
                 )}
