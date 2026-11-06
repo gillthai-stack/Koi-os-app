@@ -62,7 +62,7 @@ export function Hero({ kicker, title, children }: { kicker: string; title: React
         </h1>
         {children}
       </div>
-      <div style={{ position: "relative", zIndex: 1, flex: "0 1 380px", minWidth: 240 }} dangerouslySetInnerHTML={{ __html: SUN_HTML }} />
+      <div className="hero-art" dangerouslySetInnerHTML={{ __html: SUN_HTML }} />
     </section>
   );
 }

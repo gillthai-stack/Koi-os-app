@@ -209,7 +209,7 @@ export default function Reorder() {
                   <table>
                     <thead>
                       <tr>
-                        <th>#</th><th>Item</th><th>Sold 30d</th><th>Stock</th><th>Days left</th><th>Stamp</th><th>Carton</th><th>Order (cartons)</th>
+                        <th>#</th><th>Item</th><th>Sold 30d</th><th>Stock</th><th>Days left</th><th>Stamp</th><th>Carton</th><th>Order</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -221,7 +221,7 @@ export default function Reorder() {
                             <div className="muted" style={{ fontSize: 12 }}>{r.distributor}</div>
                           </td>
                           <td className="mono">{r.sold30}</td>
-                          <td className="mono">
+                          <td className="mono" style={{ whiteSpace: "nowrap" }}>
                             {r.stock} <StatusPill status={r.status} />
                           </td>
                           <td className="mono">{r.daysLeft === null ? "0" : r.daysLeft >= 99 ? "—" : r.daysLeft}</td>
