@@ -1,34 +1,53 @@
-// Reads live sales and stock from Shopify for the KOI//OS stock deck.
-import type { AdminApiContext } from "@shopify/shopify-app-react-router/server";
+// Reads live sales and stock from Shopify for the KOI//OS reorder table.
+// Uses the offline token stored when the KOI OS Shopify app was installed.
 import prisma from "../db.server";
+import { unauthenticated } from "../shopify.server";
 import {
   NEW_ITEM_WINDOW_DAYS,
   SALES_WINDOW_DAYS,
   STORES,
-  buildWatchList,
+  TOP_SELLER_COUNT,
+  cartonsFor,
   daysAgoISODate,
   defaultStamp,
-  isLow,
-  suggestCartons,
-  summarizeSales,
+  isExcluded,
+  reorderFor,
+  soldByVariant,
+  topVariants,
   type SaleLine,
   type Stamp,
+  type Status,
   type StoreKey,
 } from "./ordering";
 
-type Admin = AdminApiContext;
+type GraphQL = (query: string, opts?: { variables?: Record<string, unknown> }) => Promise<Response>;
 
-async function gql<T>(admin: Admin, query: string, variables?: Record<string, unknown>): Promise<T> {
-  const res = await admin.graphql(query, { variables });
+export function shopDomain(): string {
+  return process.env.SHOP || "vaping-koi.myshopify.com";
+}
+
+export class ShopifyNotConnected extends Error {}
+
+async function adminClient(): Promise<GraphQL> {
+  try {
+    const { admin } = await unauthenticated.admin(shopDomain());
+    return admin.graphql as unknown as GraphQL;
+  } catch {
+    throw new ShopifyNotConnected("The KOI OS Shopify app isn't installed on the store yet.");
+  }
+}
+
+async function gql<T>(graphql: GraphQL, query: string, variables?: Record<string, unknown>): Promise<T> {
+  const res = await graphql(query, { variables });
   const json = (await res.json()) as { data?: T; errors?: unknown };
   if (!json.data) throw new Error(`Shopify query failed: ${JSON.stringify(json.errors)}`);
   return json.data;
 }
 
-export async function findStoreLocation(admin: Admin, store: StoreKey) {
+async function findLocation(graphql: GraphQL, store: StoreKey) {
   const wanted = STORES.find((s) => s.key === store)!;
   const data = await gql<{ locations: { nodes: { id: string; name: string }[] } }>(
-    admin,
+    graphql,
     `#graphql
     query KoiLocations { locations(first: 50) { nodes { id name } } }`,
   );
@@ -37,10 +56,9 @@ export async function findStoreLocation(admin: Admin, store: StoreKey) {
   return loc;
 }
 
-/** Every line item sold at one location in the sales window. */
-async function fetchSales(admin: Admin, locationId: string): Promise<SaleLine[]> {
+async function fetchSales(graphql: GraphQL, locationId: string): Promise<SaleLine[]> {
   const numericId = locationId.split("/").pop();
-  const search = `created_at:>=${daysAgoISODate(SALES_WINDOW_DAYS)} AND location_id:${numericId}`;
+  const q = `created_at:>=${daysAgoISODate(SALES_WINDOW_DAYS)} AND location_id:${numericId}`;
   const lines: SaleLine[] = [];
   let after: string | null = null;
   // 40 orders x 20 lines keeps each page under Shopify's query cost limit.
@@ -50,30 +68,23 @@ async function fetchSales(admin: Admin, locationId: string): Promise<SaleLine[]>
         pageInfo: { hasNextPage: boolean; endCursor: string | null };
         nodes: {
           retailLocation: { id: string } | null;
-          lineItems: {
-            nodes: { quantity: number; product: { id: string } | null; variant: { id: string } | null }[];
-          };
+          lineItems: { nodes: { quantity: number; variant: { id: string } | null }[] };
         }[];
       };
     } = await gql(
-      admin,
+      graphql,
       `#graphql
       query KoiSales($q: String!, $after: String) {
         orders(first: 40, after: $after, query: $q) {
           pageInfo { hasNextPage endCursor }
-          nodes {
-            retailLocation { id }
-            lineItems(first: 20) { nodes { quantity product { id } variant { id } } }
-          }
+          nodes { retailLocation { id } lineItems(first: 20) { nodes { quantity variant { id } } } }
         }
       }`,
-      { q: search, after },
+      { q, after },
     );
-    for (const order of data.orders.nodes) {
-      if (order.retailLocation && order.retailLocation.id !== locationId) continue;
-      for (const li of order.lineItems.nodes) {
-        lines.push({ productId: li.product?.id ?? null, variantId: li.variant?.id ?? null, quantity: li.quantity });
-      }
+    for (const o of data.orders.nodes) {
+      if (o.retailLocation && o.retailLocation.id !== locationId) continue;
+      for (const li of o.lineItems.nodes) lines.push({ variantId: li.variant?.id ?? null, quantity: li.quantity });
     }
     if (!data.orders.pageInfo.hasNextPage) break;
     after = data.orders.pageInfo.endCursor;
@@ -81,170 +92,142 @@ async function fetchSales(admin: Admin, locationId: string): Promise<SaleLine[]>
   return lines;
 }
 
-async function fetchNewProductIds(admin: Admin): Promise<string[]> {
-  const data = await gql<{ products: { nodes: { id: string }[] } }>(
-    admin,
-    `#graphql
-    query KoiNewProducts($q: String!) {
-      products(first: 100, query: $q, sortKey: CREATED_AT, reverse: true) { nodes { id } }
-    }`,
-    { q: `created_at:>=${daysAgoISODate(NEW_ITEM_WINDOW_DAYS)} AND status:active` },
-  );
-  return data.products.nodes.map((p) => p.id);
-}
-
-type ProductStock = {
+type VariantInfo = {
   id: string;
-  title: string;
+  name: string;
+  productTitle: string;
   vendor: string;
-  variants: { id: string; title: string; sku: string | null; available: number }[];
+  stock: number | null; // null = not stocked at this store
 };
 
-async function fetchProductStock(admin: Admin, ids: string[], locationId: string): Promise<ProductStock[]> {
-  const out: ProductStock[] = [];
-  for (let i = 0; i < ids.length; i += 8) {
-    const data = await gql<{
-      nodes: ({
-        id: string;
-        title: string;
-        vendor: string;
-        variants: {
-          nodes: {
-            id: string;
-            title: string;
-            sku: string | null;
-            inventoryItem: { inventoryLevel: { quantities: { name: string; quantity: number }[] } | null };
-          }[];
-        };
-      } | null)[];
-    }>(
-      admin,
+const VARIANT_FIELDS = `
+  id title
+  product { title vendor }
+  inventoryItem { inventoryLevel(locationId: $loc) { quantities(names: ["available"]) { quantity } } }
+`;
+
+type RawVariant = {
+  id: string;
+  title: string;
+  product: { title: string; vendor: string };
+  inventoryItem: { inventoryLevel: { quantities: { quantity: number }[] } | null };
+};
+
+function toInfo(v: RawVariant): VariantInfo {
+  const flavour = v.title === "Default Title" ? "" : ` · ${v.title}`;
+  return {
+    id: v.id,
+    name: `${v.product.title}${flavour}`,
+    productTitle: v.product.title,
+    vendor: v.product.vendor,
+    stock: v.inventoryItem.inventoryLevel ? v.inventoryItem.inventoryLevel.quantities[0]?.quantity ?? 0 : null,
+  };
+}
+
+async function fetchVariants(graphql: GraphQL, ids: string[], locationId: string): Promise<Map<string, VariantInfo>> {
+  const out = new Map<string, VariantInfo>();
+  for (let i = 0; i < ids.length; i += 50) {
+    const data = await gql<{ nodes: (RawVariant | null)[] }>(
+      graphql,
       `#graphql
-      query KoiStock($ids: [ID!]!, $loc: ID!) {
-        nodes(ids: $ids) {
-          ... on Product {
-            id title vendor
-            variants(first: 100) {
-              nodes {
-                id title sku
-                inventoryItem { inventoryLevel(locationId: $loc) { quantities(names: ["available"]) { name quantity } } }
-              }
-            }
-          }
-        }
-      }`,
-      { ids: ids.slice(i, i + 8), loc: locationId },
+      query KoiVariants($ids: [ID!]!, $loc: ID!) { nodes(ids: $ids) { ... on ProductVariant { ${VARIANT_FIELDS} } } }`,
+      { ids: ids.slice(i, i + 50), loc: locationId },
     );
-    for (const p of data.nodes) {
-      if (!p || !p.id) continue;
-      out.push({
-        id: p.id,
-        title: p.title,
-        vendor: p.vendor,
-        variants: p.variants.nodes
-          // Variants not stocked at this store have no inventory level; skip them.
-          .filter((v) => v.inventoryItem.inventoryLevel)
-          .map((v) => ({
-            id: v.id,
-            title: v.title,
-            sku: v.sku,
-            available: v.inventoryItem.inventoryLevel!.quantities[0]?.quantity ?? 0,
-          })),
-      });
-    }
+    for (const v of data.nodes) if (v && v.id) out.set(v.id, toInfo(v));
   }
   return out;
 }
 
-export type DeckLine = {
-  variantId: string;
-  flavour: string;
-  sku: string | null;
-  available: number;
-  sold30: number;
-  cartons: number;
-};
-
-export type DeckProduct = {
-  productId: string;
-  title: string;
-  distributor: string;
-  reason: "top" | "new";
-  rank: number | null;
-  sold30: number;
-  cartonSize: number;
-  stamp: Stamp;
-  outLines: DeckLine[];
-  variantCount: number;
-};
-
-export async function loadStockDeck(admin: Admin, store: StoreKey) {
-  const location = await findStoreLocation(admin, store);
-  const [sales, newIds] = await Promise.all([fetchSales(admin, location.id), fetchNewProductIds(admin)]);
-  const { byProduct, byVariant } = summarizeSales(sales);
-
-  // Titles are needed to apply the skip list before ranking, so rank a few extra.
-  const candidateIds = [...byProduct.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([id]) => id);
-  const allIds = [...new Set([...candidateIds, ...newIds])];
-  const stock = await fetchProductStock(admin, allIds, location.id);
-  const byId = new Map(stock.map((p) => [p.id, p]));
-  const titles = new Map(stock.map((p) => [p.id, p.title]));
-
-  const watch = buildWatchList(byProduct, titles, newIds.filter((id) => byId.has(id)));
-  const settings = await prisma.productSetting.findMany({
-    where: { productId: { in: watch.map((w) => w.productId) } },
-  });
-  const settingById = new Map(settings.map((s) => [s.productId, s]));
-
-  let rank = 0;
-  const products: DeckProduct[] = watch.flatMap((w) => {
-    const p = byId.get(w.productId);
-    if (!p) return [];
-    const setting = settingById.get(p.id);
-    const cartonSize = setting?.cartonSize ?? 5;
-    const outLines = p.variants
-      .filter((v) => isLow(v.available))
-      .map((v) => {
-        const sold30 = byVariant.get(v.id) ?? 0;
-        return {
-          variantId: v.id,
-          flavour: v.title,
-          sku: v.sku,
-          available: v.available,
-          sold30,
-          cartons: suggestCartons(sold30, cartonSize),
-        };
-      })
-      .sort((a, b) => b.sold30 - a.sold30);
-    return [
-      {
-        productId: p.id,
-        title: p.title,
-        distributor: p.vendor,
-        reason: w.reason,
-        rank: w.reason === "top" ? ++rank : null,
-        sold30: byProduct.get(p.id) ?? 0,
-        cartonSize,
-        stamp: (setting?.stamp as Stamp | undefined) ?? defaultStamp(p.title),
-        outLines,
-        variantCount: p.variants.length,
-      },
-    ];
-  });
-
-  return { location, products, refreshedAt: new Date().toISOString() };
+async function fetchNewVariants(graphql: GraphQL, locationId: string): Promise<VariantInfo[]> {
+  const data = await gql<{ products: { nodes: { variants: { nodes: RawVariant[] } }[] } }>(
+    graphql,
+    `#graphql
+    query KoiNewItems($q: String!, $loc: ID!) {
+      products(first: 15, query: $q, sortKey: CREATED_AT, reverse: true) {
+        nodes { variants(first: 40) { nodes { ${VARIANT_FIELDS} } } }
+      }
+    }`,
+    { q: `created_at:>=${daysAgoISODate(NEW_ITEM_WINDOW_DAYS)} AND status:active`, loc: locationId },
+  );
+  return data.products.nodes.flatMap((p) => p.variants.nodes.map(toInfo));
 }
 
-export async function saveProductSetting(
-  productId: string,
-  cartonSize: number,
-  stamp: Stamp,
-  updatedBy: string | null,
+export type ReorderRow = {
+  variantId: string;
+  kind: "top" | "new";
+  rank: number | null;
+  name: string;
+  distributor: string;
+  sold30: number;
+  stock: number;
+  daysLeft: number | null;
+  status: Status;
+  needPcs: number;
+  cartonSize: number;
+  suggestedCartons: number;
+  stamp: Stamp;
+};
+
+export async function loadReorderTable(store: StoreKey) {
+  const graphql = await adminClient();
+  const location = await findLocation(graphql, store);
+  const [sales, fresh] = await Promise.all([fetchSales(graphql, location.id), fetchNewVariants(graphql, location.id)]);
+  const sold = soldByVariant(sales);
+
+  // Look up a few more than 30 so skipped or deleted items don't shorten the list.
+  const candidates = [...sold.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, TOP_SELLER_COUNT + 15)
+    .map(([id]) => id);
+  const info = await fetchVariants(graphql, candidates, location.id);
+  const top = topVariants(sold, (id) => info.get(id)?.productTitle);
+
+  const topSet = new Set(top);
+  const newOnes = fresh.filter((v) => v.stock !== null && !topSet.has(v.id) && !isExcluded(v.productTitle));
+  const ids = [...top, ...newOnes.map((v) => v.id)];
+  const settings = await prisma.variantSetting.findMany({ where: { variantId: { in: ids } } });
+  const settingOf = new Map(settings.map((s) => [s.variantId, s]));
+
+  const row = (v: VariantInfo, kind: "top" | "new", rank: number | null): ReorderRow => {
+    const s = settingOf.get(v.id);
+    const cartonSize = s?.cartonSize ?? 5;
+    const sold30 = sold.get(v.id) ?? 0;
+    const stock = v.stock ?? 0;
+    const r = reorderFor(stock, sold30, kind === "new");
+    return {
+      variantId: v.id,
+      kind,
+      rank,
+      name: v.name,
+      distributor: v.vendor,
+      sold30,
+      stock,
+      daysLeft: r.daysLeft,
+      status: r.status,
+      needPcs: r.needPcs,
+      cartonSize,
+      suggestedCartons: cartonsFor(r.needPcs, cartonSize),
+      stamp: (s?.stamp as Stamp | null) ?? defaultStamp(v.productTitle),
+    };
+  };
+
+  const rows = [
+    ...top.map((id, i) => row(info.get(id)!, "top", i + 1)),
+    ...newOnes.map((v) => row(v, "new", null)),
+  ];
+  return { location, rows, refreshedAt: new Date().toISOString() };
+}
+
+export async function saveVariantSetting(
+  variantId: string,
+  change: { cartonSize?: number; stamp?: Stamp },
+  updatedBy: string,
 ) {
-  const size = Number.isFinite(cartonSize) && cartonSize >= 1 && cartonSize <= 50 ? Math.round(cartonSize) : 5;
-  await prisma.productSetting.upsert({
-    where: { productId },
-    create: { productId, cartonSize: size, stamp, updatedBy },
-    update: { cartonSize: size, stamp, updatedBy },
+  const cartonSize =
+    change.cartonSize !== undefined && [4, 5, 6].includes(change.cartonSize) ? change.cartonSize : undefined;
+  await prisma.variantSetting.upsert({
+    where: { variantId },
+    create: { variantId, cartonSize: cartonSize ?? 5, stamp: change.stamp ?? null, updatedBy },
+    update: { ...(cartonSize ? { cartonSize } : {}), ...(change.stamp ? { stamp: change.stamp } : {}), updatedBy },
   });
 }
