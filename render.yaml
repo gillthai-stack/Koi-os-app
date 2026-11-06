@@ -1,0 +1,25 @@
+# Render blueprint for KOI//OS. Secrets are set in the Render dashboard, never here.
+services:
+  - type: web
+    name: koi-os-app
+    runtime: node
+    plan: starter
+    region: ohio
+    buildCommand: npm ci && npm run build
+    startCommand: npm run setup && npm run start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: SHOPIFY_APP_URL
+        sync: false
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: SCOPES
+        value: read_products,read_inventory,read_orders,read_locations
+      - key: DATABASE_URL
+        sync: false
