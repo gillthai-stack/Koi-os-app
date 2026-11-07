@@ -6,6 +6,23 @@ export type PromptLine = { name: string; stamp: Stamp; qty: number; productUrl?:
 
 const stampName = (s: Stamp) => (s === "ONTARIO" ? "Ontario" : "Federal");
 
+/** Drops our own "[ONT]"/"[FED]" title tag; the stamp column is what the distributor needs. */
+export function cleanName(name: string): string {
+  return name.replace(/^\s*\[(ONT|ONTARIO|FED|FEDERAL)\]\s*/i, "").trim();
+}
+
+/** A product page only helps if it points past the site's home page. */
+export function usefulPage(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/+$/, "").replace(/^\/(en|fr)$/i, "");
+    return path || u.search ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 export function orderPrompt(opts: {
   distributor: string;
   siteUrl: string | null;
@@ -30,8 +47,10 @@ export function orderPrompt(opts: {
       : null,
     "Items:",
     ...lines.map(
-      (l, i) =>
-        `${i + 1}. ${l.name} | ${stampName(l.stamp)} stamp | qty ${l.qty}${l.productUrl ? ` | page: ${l.productUrl}` : ""}`,
+      (l, i) => {
+        const page = usefulPage(l.productUrl);
+        return `${i + 1}. ${cleanName(l.name)} | ${stampName(l.stamp)} stamp | qty ${l.qty}${page ? ` | page: ${page}` : ""}`;
+      },
     ),
     "",
     "Don't substitute anything and don't check out. When you're done, open the cart and tell me what's in it, and list any item you couldn't find, that was out of stock, or that had a different quantity limit.",
