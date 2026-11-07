@@ -1,17 +1,21 @@
 // KOI//OS reorder page: top 30 sellers per store, filtered to what needs ordering,
 // with an order sheet grouped by distributor (GCore split by stamp).
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction, ShouldRevalidateFunction } from "react-router";
 import { Link, useFetcher, useLoaderData, useNavigation } from "react-router";
 import { Hero, Shell } from "../../components/Shell";
+import { OrderSheet, type SheetLineInfo } from "../../components/OrderSheet";
+import prisma from "../../db.server";
 import { requireUser } from "../../lib/auth.server";
-import { DISTRIBUTOR_SITES } from "../../lib/distributors";
+import { DISTRIBUTOR_SITES, hostOf, type QtyUnit } from "../../lib/distributors";
 import { STORES, buildOrderSheet, cartonsFor, type Stamp, type StoreKey } from "../../lib/ordering";
 import {
   ShopifyNotConnected,
   cleanSiteUrl,
   loadReorderTable,
   saveDistributorLink,
+  saveProductUrl,
+  saveQtyUnit,
   saveVariantSetting,
   type ReorderRow,
 } from "../../lib/stock.server";
@@ -31,7 +35,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return { user, store, ...table, problem: null as null | "not-connected" | string };
   } catch (e) {
     const problem = e instanceof ShopifyNotConnected ? "not-connected" : e instanceof Error ? e.message : "Unknown error";
-    return { user, store, location: null, rows: [] as ReorderRow[], refreshedAt: null, problem };
+    return { user, store, location: null, rows: [] as ReorderRow[], units: {} as Record<string, QtyUnit>, refreshedAt: null, problem };
   }
 };
 
@@ -46,8 +50,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await saveDistributorLink(vendor, distributor, url, user.username);
     return { ok: true, vendor, distributor, url };
   }
+  if (form.get("intent") === "unit") {
+    const distributor = String(form.get("distributor") ?? "").trim();
+    const unit = form.get("unit") === "PIECE" ? "PIECE" : "CARTON";
+    if (!distributor) return { ok: false };
+    await saveQtyUnit(distributor, unit, user.username);
+    return { ok: true };
+  }
   const variantId = String(form.get("variantId") ?? "");
   if (!variantId.startsWith("gid://shopify/ProductVariant/")) return { ok: false };
+  if (form.get("intent") === "product") {
+    const productUrl = cleanSiteUrl(String(form.get("url") ?? ""));
+    const known = productUrl && (Object.values(DISTRIBUTOR_SITES).some((u) => hostOf(u) === hostOf(productUrl)) || (await knownSite(productUrl)));
+    if (!productUrl || !known) {
+      return { ok: false, error: "That link isn't on a distributor site we know." };
+    }
+    await saveProductUrl(variantId, productUrl, user.username);
+    return { ok: true, variantId, productUrl };
+  }
   const stamp = form.get("stamp");
   const cartonSize = form.get("cartonSize");
   await saveVariantSetting(
@@ -60,6 +80,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   );
   return { ok: true };
 };
+
+async function knownSite(url: string): Promise<boolean> {
+  const links = await prisma.distributorLink.findMany({ select: { url: true } });
+  return links.some((l) => hostOf(l.url) === hostOf(url));
+}
 
 // Saving a stamp or carton size shouldn't re-pull all of Shopify.
 export const shouldRevalidate: ShouldRevalidateFunction = ({ formMethod, defaultShouldRevalidate }) =>
@@ -107,6 +132,13 @@ export default function Reorder() {
   const [filter, setFilter] = useState<Filter>("needs");
   const [over, setOver] = useState<Record<string, Override>>({});
   const [linked, setLinked] = useState<Record<string, LinkOverride>>({});
+  const [productUrls, setProductUrls] = useState<Record<string, string>>({});
+  const [unitOver, setUnitOver] = useState<Record<string, QtyUnit>>({});
+  const onProductUrl = useCallback((id: string, url: string) => setProductUrls((m) => (m[id] === url ? m : { ...m, [id]: url })), []);
+  const onUnit = (distributor: string, unit: QtyUnit) => {
+    setUnitOver((m) => ({ ...m, [distributor]: unit }));
+    fetcher.submit({ intent: "unit", distributor, unit }, { method: "post" });
+  };
   const [qty, setQty] = useSavedOrder(data.store);
   const loading = nav.state === "loading";
 
@@ -123,9 +155,10 @@ export default function Reorder() {
           suggestedCartons: cartonsFor(r.needPcs, cartonSize),
           distributor: link?.distributor ?? r.distributor,
           siteUrl: link?.url ?? r.siteUrl,
+          productUrl: productUrls[r.variantId] ?? r.productUrl,
         };
       }),
-    [data.rows, over, linked],
+    [data.rows, over, linked, productUrls],
   );
 
   const top = rows.filter((r) => r.kind === "top");
@@ -145,6 +178,8 @@ export default function Reorder() {
   );
   const totalCartons = sheet.reduce((n, g) => n + g.cartons, 0);
   const siteOf = new Map(rows.filter((r) => r.siteUrl).map((r) => [r.distributor, r.siteUrl as string]));
+  const infoOf = new Map<string, SheetLineInfo>(rows.map((r) => [r.variantId, { cartonSize: r.cartonSize, productUrl: r.productUrl }]));
+  const units: Record<string, QtyUnit> = { ...data.units, ...unitOver };
 
   // Vendors with something to order but no ordering site yet: ask for one.
   const unlinked = new Map<string, number>();
@@ -310,7 +345,16 @@ export default function Reorder() {
               )}
             </section>
 
-            <OrderSheet sheet={sheet} total={totalCartons} store={storeLabel} siteOf={siteOf} />
+            <OrderSheet
+              sheet={sheet}
+              total={totalCartons}
+              store={storeLabel}
+              siteOf={siteOf}
+              infoOf={infoOf}
+              units={units}
+              onUnit={onUnit}
+              onProductUrl={onProductUrl}
+            />
           </div>
         </>
       )}
@@ -366,84 +410,5 @@ function LinkForm({ vendor, count, onSaved }: { vendor: string; count: number; o
         ))}
       </datalist>
     </fetcher.Form>
-  );
-}
-
-function OrderSheet({
-  sheet,
-  total,
-  store,
-  siteOf,
-}: {
-  sheet: ReturnType<typeof buildOrderSheet>;
-  total: number;
-  store: string;
-  siteOf: Map<string, string>;
-}) {
-  const [copied, setCopied] = useState(false);
-  const text = [
-    `KOI//OS order · ${store}`,
-    ...sheet.flatMap((g) => [
-      "",
-      `${g.distributor}${g.stamp ? ` (${g.stamp === "ONTARIO" ? "Ontario" : "Federal"} checkout)` : ""}`,
-      ...g.lines.map((l) => `  ${l.cartons} ctn  ${l.name}  [${l.stamp === "ONTARIO" ? "ONT" : "FED"}]`),
-    ]),
-  ].join("\n");
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard blocked */
-    }
-  };
-  return (
-    <section className="card sheet">
-      <div className="card-head">
-        <h2 className="h" style={{ margin: 0, fontSize: 18 }}>Order sheet</h2>
-        <span className="idx">{total} CTN</span>
-      </div>
-      {sheet.length === 0 ? (
-        <p className="muted" style={{ fontSize: 14 }}>Add cartons with + or Fill suggested. They’re grouped here by distributor.</p>
-      ) : (
-        <>
-          {sheet.map((g) => (
-            <div key={g.key} className="sheet-group">
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div>
-                  <div className="h" style={{ fontWeight: 700 }}>{g.distributor}</div>
-                  <div className="muted" style={{ fontSize: 12 }}>
-                    {g.cartons} cartons
-                    {g.stamp && <> · <span className={g.stamp === "ONTARIO" ? "glow-ont" : "glow-fed"}>{g.stamp === "ONTARIO" ? "Ontario" : "Federal"} checkout</span></>}
-                  </div>
-                </div>
-                {siteOf.get(g.distributor) && (
-                  <a className="btn pink" href={siteOf.get(g.distributor)} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", textDecoration: "none" }}>
-                    Open site
-                  </a>
-                )}
-              </div>
-              <ul className="sheet-lines">
-                {g.lines.map((l) => (
-                  <li key={l.variantId}>
-                    <span className="mono glow-c">{l.cartons}×</span> {l.name}
-                    <span className={`stamp ${l.stamp === "ONTARIO" ? "ont" : "fed"}`} style={{ minHeight: 22, padding: "0 8px", marginLeft: 6, fontSize: 10 }}>
-                      {l.stamp === "ONTARIO" ? "ONT" : "FED"}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-          {sheet.some((g) => g.stamp) && (
-            <p className="muted" style={{ fontSize: 12 }}>GCore Ontario and Federal lines are separate checkouts. Do one, then the other.</p>
-          )}
-          <button type="button" className="btn" onClick={copy} style={{ width: "100%" }}>
-            {copied ? "Copied" : "Copy order sheet"}
-          </button>
-        </>
-      )}
-    </section>
   );
 }
