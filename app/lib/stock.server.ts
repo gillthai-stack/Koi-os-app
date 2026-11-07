@@ -1,7 +1,7 @@
 // Reads live sales and stock from Shopify for the KOI//OS reorder table.
 // Uses the offline token stored when the KOI OS Shopify app was installed.
 import prisma from "../db.server";
-import { DISTRIBUTOR_SITES } from "./distributors";
+import { DISTRIBUTOR_SITES, defaultQtyUnit, type QtyUnit } from "./distributors";
 import { unauthenticated } from "../shopify.server";
 import {
   NEW_ITEM_WINDOW_DAYS,
@@ -164,6 +164,8 @@ export type ReorderRow = {
   distributor: string;
   /** Ordering site, or null when nobody has linked one yet. */
   siteUrl: string | null;
+  /** This flavour's product page on the distributor site, once linked. */
+  productUrl: string | null;
   sold30: number;
   stock: number;
   daysLeft: number | null;
@@ -194,6 +196,8 @@ export async function loadReorderTable(store: StoreKey) {
   const settings = await prisma.variantSetting.findMany({ where: { variantId: { in: ids } } });
   const settingOf = new Map(settings.map((s) => [s.variantId, s]));
   const links = await prisma.distributorLink.findMany();
+  const products = await prisma.distroProduct.findMany({ where: { variantId: { in: ids } } });
+  const productOf = new Map(products.map((p) => [p.variantId, p.url]));
   const linkOf = new Map(links.map((l) => [l.vendor, l]));
 
   const row = (v: VariantInfo, kind: "top" | "new", rank: number | null): ReorderRow => {
@@ -210,6 +214,7 @@ export async function loadReorderTable(store: StoreKey) {
       vendor: v.vendor,
       distributor: linkOf.get(v.vendor)?.distributor ?? v.vendor,
       siteUrl: linkOf.get(v.vendor)?.url ?? DISTRIBUTOR_SITES[v.vendor] ?? null,
+      productUrl: productOf.get(v.id) ?? null,
       sold30,
       stock,
       daysLeft: r.daysLeft,
@@ -225,7 +230,8 @@ export async function loadReorderTable(store: StoreKey) {
     ...top.map((id, i) => row(info.get(id)!, "top", i + 1)),
     ...newOnes.map((v) => row(v, "new", null)),
   ];
-  return { location, rows, refreshedAt: new Date().toISOString() };
+  const units = await loadQtyUnits(rows);
+  return { location, rows, units, refreshedAt: new Date().toISOString() };
 }
 
 export async function saveVariantSetting(
@@ -256,5 +262,30 @@ export async function saveDistributorLink(vendor: string, distributor: string, u
     where: { vendor },
     create: { vendor, distributor, url, updatedBy },
     update: { distributor, url, updatedBy },
+  });
+}
+
+/** Cartons or pieces per distributor: saved choice, else the site default (globe11 = pieces). */
+export async function loadQtyUnits(rows: { distributor: string; siteUrl: string | null }[]) {
+  const saved = await prisma.distributorSetting.findMany();
+  const savedOf = new Map(saved.map((s) => [s.distributor, s.qtyUnit as QtyUnit]));
+  const out: Record<string, QtyUnit> = {};
+  for (const r of rows) out[r.distributor] ??= savedOf.get(r.distributor) ?? defaultQtyUnit(r.siteUrl ?? "");
+  return out;
+}
+
+export async function saveQtyUnit(distributor: string, qtyUnit: QtyUnit, updatedBy: string) {
+  await prisma.distributorSetting.upsert({
+    where: { distributor },
+    create: { distributor, qtyUnit, updatedBy },
+    update: { qtyUnit, updatedBy },
+  });
+}
+
+export async function saveProductUrl(variantId: string, url: string, updatedBy: string) {
+  await prisma.distroProduct.upsert({
+    where: { variantId },
+    create: { variantId, url, updatedBy },
+    update: { url, updatedBy },
   });
 }

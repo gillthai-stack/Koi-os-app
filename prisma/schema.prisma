@@ -69,3 +69,24 @@ model DistributorLink {
   updatedAt   DateTime @updatedAt
   updatedBy   String?
 }
+
+enum QtyUnit {
+  CARTON
+  PIECE
+}
+
+// The product page on the distributor's site for one of our flavours, used to fill their cart.
+model DistroProduct {
+  variantId String   @id // Shopify product variant GID
+  url       String
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
+
+// Per-distributor ordering settings.
+model DistributorSetting {
+  distributor String   @id
+  qtyUnit     QtyUnit
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+}
