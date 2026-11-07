@@ -224,3 +224,6 @@ select.field{appearance:auto}
 /* A stat tile that opens something */
 .tile-button{all:unset;display:block;cursor:pointer;border-radius:14px}
 .tile-button:hover .stat-tile,.tile-button:focus-visible .stat-tile{border-color:#F472B6;box-shadow:0 0 18px rgba(244,114,182,.35)}
+/* Customer request lines inside an order sheet group */
+.sheet-requests{margin-top:10px;padding-top:8px;border-top:1px dashed rgba(244,114,182,.35)}
+.stepper.mini{width:24px;height:24px;min-height:24px;font-size:14px;padding:0}
