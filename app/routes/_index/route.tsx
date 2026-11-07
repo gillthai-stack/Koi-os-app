@@ -6,7 +6,7 @@ import { Link, useFetcher, useLoaderData, useNavigation } from "react-router";
 import { Hero, Shell } from "../../components/Shell";
 import { requireUser } from "../../lib/auth.server";
 import { DISTRIBUTOR_SITES } from "../../lib/distributors";
-import { STORES, buildOrderSheet, cartonsFor, nextCartonSize, type Stamp, type StoreKey } from "../../lib/ordering";
+import { STORES, buildOrderSheet, cartonsFor, type Stamp, type StoreKey } from "../../lib/ordering";
 import {
   ShopifyNotConnected,
   cleanSiteUrl,
@@ -261,7 +261,7 @@ export default function Reorder() {
                   <table>
                     <thead>
                       <tr>
-                        <th>#</th><th>Item</th><th>Sold 30d</th><th>Stock</th><th>Days left</th><th>Stamp</th><th>Carton</th><th>Order</th>
+                        <th>#</th><th>Item</th><th>Sold 30d</th><th>Stock</th><th>Days left</th><th>Stamp</th><th>Order</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -288,11 +288,6 @@ export default function Reorder() {
                               onClick={() => saveSetting(r, { stamp: r.stamp === "ONTARIO" ? "FEDERAL" : "ONTARIO" })}
                             >
                               {r.stamp === "ONTARIO" ? "ONT" : "FED"}
-                            </button>
-                          </td>
-                          <td>
-                            <button type="button" className="stamp none" title="Pieces per carton (tap to change)" onClick={() => saveSetting(r, { cartonSize: nextCartonSize(r.cartonSize) })}>
-                              {r.cartonSize} pcs
                             </button>
                           </td>
                           <td>
