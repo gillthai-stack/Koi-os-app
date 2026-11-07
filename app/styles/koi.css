@@ -212,3 +212,4 @@ select.field{appearance:auto}
 }
 .steps{margin:14px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:12px;line-height:1.5}
 .sheet-lines li{display:flex;flex-direction:column;gap:2px}
+.prompt-box{width:100%;min-height:180px;margin-top:8px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;resize:vertical}
