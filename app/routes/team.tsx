@@ -47,6 +47,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (u) await prisma.user.update({ where: { id }, data: { active: !u.active } });
     return { ok: u?.active ? `${u.displayName} can no longer log in.` : `${u?.displayName} can log in again.` };
   }
+  if (intent === "delete") {
+    if (id === me.id) return { error: "You can't delete your own login." };
+    const u = await prisma.user.findUnique({ where: { id } });
+    if (!u) return { error: "That person was already removed." };
+    await prisma.user.delete({ where: { id } });
+    return { ok: `Deleted ${u.displayName}.` };
+  }
   return { error: "Unknown action." };
 };
 
@@ -101,13 +108,25 @@ export default function Team() {
                   </td>
                   <td>
                     {p.id !== user.id && (
-                      <Form method="post">
-                        <input type="hidden" name="intent" value="toggle" />
-                        <input type="hidden" name="id" value={p.id} />
-                        <button className={`btn${p.active ? " danger" : ""}`} type="submit">
-                          {p.active ? "Turn off" : "Turn on"}
-                        </button>
-                      </Form>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Form method="post">
+                          <input type="hidden" name="intent" value="toggle" />
+                          <input type="hidden" name="id" value={p.id} />
+                          <button className="btn" type="submit">
+                            {p.active ? "Turn off" : "Turn on"}
+                          </button>
+                        </Form>
+                        <Form
+                          method="post"
+                          onSubmit={(e) => {
+                            if (!confirm(`Delete ${p.displayName}? This can't be undone.`)) e.preventDefault();
+                          }}
+                        >
+                          <input type="hidden" name="intent" value="delete" />
+                          <input type="hidden" name="id" value={p.id} />
+                          <button className="btn danger" type="submit">Delete</button>
+                        </Form>
+                      </div>
                     )}
                   </td>
                 </tr>
