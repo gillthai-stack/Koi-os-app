@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextCode, normalizeStatus, parsePasted, parseRequestRows, sheetKey } from "./requests.ts";
+import { nextCode, normalizeStatus, parsePasted, parseRequestRows, planSheetWrite, sheetKey } from "./requests.ts";
 
 test("status spellings from the sheet map to our statuses", () => {
   assert.equal(normalizeStatus("Ready - set aside"), "Ready – set aside");
@@ -56,4 +56,29 @@ test("keep-in-stock rows use Requested by and the store column", () => {
   assert.equal(got[0].store, "brampton");
   assert.equal(got[0].status, "Standing order");
   assert.equal(got[1].customer, "John");
+});
+
+test("app changes go to the matching sheet row, new requests are appended", () => {
+  const rows = [
+    ["ID", "Store", "Customer", "Phone", "Product", "Qty wanted", "Qty set aside", "Status", "Notes"],
+    ["M-001", "Mississauga", "Ashley", "647-882-7727", "Juiced Up [Kiwi 20]", "5", "5", "Ready – set aside", "Fish"],
+    ["M-002", "Mississauga", "Ali", "", "Vuse GO8K", "1", "", "New", ""],
+  ];
+  const base = { store: "mississauga", phone: null, distributor: null, type: null, qtyWanted: 1, priority: null, notes: null };
+  const upd = planSheetWrite(rows, { ...base, code: "M-002", customer: "Ali", product: "Vuse GO8K", qtySetAside: 1, status: "Ordered" });
+  assert.deepEqual(upd, { kind: "update", cells: [{ row: 2, col: 7, value: "Ordered" }, { row: 2, col: 6, value: "1" }] });
+  const add = planSheetWrite(rows, { ...base, code: "M-003", customer: "Evan", phone: "416-402-3788", product: "InstaBarGO", qtySetAside: null, status: "New" });
+  assert.deepEqual(add, { kind: "append", values: ["M-003", "Mississauga", "Evan", "416-402-3788", "InstaBarGO", "1", "", "New", ""] });
+});
+
+test("keep-in-stock rows without IDs match by product and customer", () => {
+  const rows = [
+    ["Store", "Product", "Requested by", "Phone", "Notes"],
+    ["Brampton", "STLTH60K [Grape Ice]", "", "647-230-1004", "Stock it."],
+  ];
+  const plan = planSheetWrite(rows, {
+    code: "K-001", store: "brampton", customer: "(no name)", phone: "647-230-1004", product: "STLTH60K [Grape Ice]",
+    distributor: null, type: null, qtyWanted: null, qtySetAside: null, status: "Standing order", priority: null, notes: "Stock it. Weekly",
+  });
+  assert.deepEqual(plan, { kind: "update", cells: [{ row: 1, col: 4, value: "Stock it. Weekly" }] });
 });

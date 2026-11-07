@@ -98,7 +98,7 @@ const HEADERS: Record<Field, string[]> = {
   store: ["store", "location", "shop"],
 };
 
-function headerIndex(row: string[]): Partial<Record<Field, number>> | null {
+export function headerIndex(row: string[]): Partial<Record<Field, number>> | null {
   const cells = row.map((c) => squash(c ?? ""));
   const idx: Partial<Record<Field, number>> = {};
   for (const [field, names] of Object.entries(HEADERS) as [Field, string[]][]) {
@@ -163,4 +163,72 @@ export function parsePasted(text: string): string[][] {
 /** Identity of a sheet row, so syncing again doesn't add it twice. */
 export function sheetKey(store: string, r: Pick<RequestInput, "customer" | "phone" | "product">): string {
   return [store, squash(r.customer), (r.phone ?? "").replace(/\D/g, ""), squash(r.product)].join("|");
+}
+
+/** What the app keeps for a request, as far as the sheet is concerned. */
+export type SheetRequest = {
+  code: string;
+  store: string;
+  customer: string;
+  phone: string | null;
+  product: string;
+  distributor: string | null;
+  type: string | null;
+  qtyWanted: number | null;
+  qtySetAside: number | null;
+  status: string;
+  priority: string | null;
+  notes: string | null;
+};
+
+const STORE_LABEL: Record<string, string> = { mississauga: "Mississauga", brampton: "Brampton" };
+
+/** Fields the app changes after a request exists; these are written back to the sheet. */
+export const SYNCED_FIELDS = ["status", "qtySetAside", "notes"] as const;
+
+const cellValue = (r: SheetRequest, f: Field): string => {
+  if (f === "store") return STORE_LABEL[r.store] ?? r.store;
+  const v = (r as unknown as Record<string, unknown>)[f];
+  return v === null || v === undefined ? "" : String(v);
+};
+
+/**
+ * How to bring one request into a sheet tab: the cells to change on its row (matched by ID, or by
+ * customer + phone + product when the tab has no IDs), or a whole new row to append.
+ */
+export function planSheetWrite(
+  rows: string[][],
+  req: SheetRequest,
+): { kind: "update"; cells: { row: number; col: number; value: string }[] } | { kind: "append"; values: string[] } | { kind: "none" } {
+  const at = rows.findIndex((r) => headerIndex(r));
+  if (at < 0) return { kind: "none" };
+  const idx = headerIndex(rows[at])!;
+  const key = sheetKey(req.store, req);
+  const get = (r: string[], f: Field) => (idx[f] === undefined ? "" : (r[idx[f]!] ?? ""));
+  for (let i = at + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const code = get(r, "code").trim().toUpperCase();
+    const sameCode = idx.code !== undefined && code && code === req.code;
+    const sameKey =
+      (!code || idx.code === undefined) &&
+      get(r, "product").trim() &&
+      sheetKey(req.store, { customer: get(r, "customer").trim() || "(no name)", phone: get(r, "phone"), product: get(r, "product") }) === key;
+    if (!sameCode && !sameKey) continue;
+    const cells: { row: number; col: number; value: string }[] = [];
+    const fields: Field[] = [...SYNCED_FIELDS];
+    if (idx.code !== undefined && !code) fields.push("code");
+    for (const f of fields) {
+      if (idx[f] === undefined) continue;
+      const want = cellValue(req, f);
+      if (get(r, f).trim() !== want) cells.push({ row: i, col: idx[f]!, value: want });
+    }
+    return { kind: "update", cells };
+  }
+  const width = rows[at].length;
+  const values = Array.from({ length: width }, () => "");
+  for (const [f, col] of Object.entries(idx) as [Field, number][]) {
+    if (f === "repeatDays" || f === "lastDate") continue;
+    values[col] = cellValue(req, f);
+  }
+  return { kind: "append", values };
 }
