@@ -97,6 +97,8 @@ export type OrderLine = {
   distributor: string;
   stamp: Stamp;
   cartons: number;
+  /** Set for lines sent from customer requests (shown under "Requests" in the group). */
+  request?: { key: string; customers: string[]; codes: string[] };
 };
 
 export type OrderGroup = {

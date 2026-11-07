@@ -7,7 +7,8 @@ import { Hero, Shell } from "../../components/Shell";
 import { OrderSheet, type SheetLineInfo } from "../../components/OrderSheet";
 import prisma from "../../db.server";
 import { requireUser } from "../../lib/auth.server";
-import { DISTRIBUTOR_SITES, hostOf, type QtyUnit } from "../../lib/distributors";
+import { DISTRIBUTOR_SITES, defaultQtyUnit, hostOf, type QtyUnit } from "../../lib/distributors";
+import { listOrderItems, markOrderItemsOrdered, setOrderItemCartons } from "../../lib/requests.server";
 import { STORES, buildOrderSheet, cartonsFor, type Stamp, type StoreKey } from "../../lib/ordering";
 import {
   ShopifyNotConnected,
@@ -34,14 +35,38 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (url.searchParams.get("shop")) throw redirect(`/app?${url.searchParams.toString()}`);
   const user = await requireUser(request);
   const store = storeFrom(url);
+  const requestItems = await loadRequestItems(store);
   try {
     const table = await loadReorderTable(store);
-    return { user, store, ...table, problem: null as null | "not-connected" | string };
+    return { user, store, ...table, requestItems, problem: null as null | "not-connected" | string };
   } catch (e) {
     const problem = e instanceof ShopifyNotConnected ? "not-connected" : e instanceof Error ? e.message : "Unknown error";
-    return { user, store, location: null, rows: [] as ReorderRow[], units: {} as Record<string, QtyUnit>, refreshedAt: null, problem };
+    return { user, store, location: null, rows: [] as ReorderRow[], units: {} as Record<string, QtyUnit>, refreshedAt: null, requestItems, problem };
   }
 };
+
+/** Customer requests sent here from Requests → To order, with who asked for them. */
+async function loadRequestItems(store: StoreKey) {
+  const items = await listOrderItems(store);
+  const ids = [...new Set(items.flatMap((i) => i.requestIds))];
+  const reqs = ids.length ? await prisma.customerRequest.findMany({ where: { id: { in: ids } }, select: { id: true, code: true, customer: true } }) : [];
+  const byId = new Map(reqs.map((r) => [r.id, r]));
+  const saved = await prisma.distributorSetting.findMany();
+  const unitOf = new Map(saved.map((x) => [x.distributor, x.qtyUnit as QtyUnit]));
+  return items.map((i) => {
+    const rs = i.requestIds.map((id) => byId.get(id)).filter((r) => r !== undefined);
+    return {
+      key: i.key,
+      name: i.name,
+      distributor: i.distributor,
+      stamp: i.stamp as Stamp,
+      cartons: i.cartons,
+      customers: [...new Set(rs.map((r) => r.customer))],
+      codes: rs.map((r) => r.code),
+      unit: unitOf.get(i.distributor) ?? defaultQtyUnit(DISTRIBUTOR_SITES[i.distributor] ?? ""),
+    };
+  });
+}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const user = await requireUser(request);
@@ -53,6 +78,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!vendor || !url) return { ok: false, error: "Add a working website link." };
     await saveDistributorLink(vendor, distributor, url, user.username);
     return { ok: true, vendor, distributor, url };
+  }
+  if (form.get("intent") === "request-cartons") {
+    await setOrderItemCartons(String(form.get("key")), Math.max(0, Number(form.get("cartons")) || 0), user.username);
+    return { ok: true };
+  }
+  if (form.get("intent") === "requests-ordered") {
+    const keys = String(form.get("keys") ?? "").split("\n").filter(Boolean);
+    const { count, sheetError } = await markOrderItemsOrdered(keys, user.username);
+    return { ok: true, ordered: count, sheetError };
   }
   if (form.get("intent") === "unit") {
     const distributor = String(form.get("distributor") ?? "").trim();
@@ -142,6 +176,7 @@ export default function Reorder() {
     fetcher.submit({ intent: "unit", distributor, unit }, { method: "post" });
   };
   const [qty, setQty] = useSavedOrder(data.store);
+  const [reqCartons, setReqCartons] = useState<Record<string, number>>({});
   const loading = nav.state === "loading";
 
   const rows = useMemo(
@@ -172,15 +207,46 @@ export default function Reorder() {
     : filter === "all" ? top
     : fresh;
 
-  const sheet = buildOrderSheet(
-    rows
+  const requestLines = data.requestItems
+    .map((i) => ({ ...i, cartons: reqCartons[i.key] ?? i.cartons }))
+    .filter((i) => i.cartons > 0)
+    .map((i) => ({
+      variantId: `req:${i.key}`,
+      name: i.name,
+      distributor: i.distributor,
+      stamp: i.stamp,
+      cartons: i.cartons,
+      request: { key: i.key, customers: i.customers, codes: i.codes },
+    }));
+  const sheet = buildOrderSheet([
+    ...rows
       .filter((r) => (qty[r.variantId] ?? 0) > 0)
       .map((r) => ({ variantId: r.variantId, name: r.name, distributor: r.distributor, stamp: r.stamp, cartons: qty[r.variantId] })),
-  );
+    ...requestLines,
+  ]);
+  const setRequestCartons = (key: string, cartons: number) => {
+    const n = Math.max(0, cartons);
+    setReqCartons((m) => ({ ...m, [key]: n }));
+    fetcher.submit({ intent: "request-cartons", key, cartons: String(n) }, { method: "post" });
+  };
+  const markRequestsOrdered = (keys: string[]) => {
+    setReqCartons((m) => ({ ...m, ...Object.fromEntries(keys.map((k) => [k, 0])) }));
+    fetcher.submit({ intent: "requests-ordered", keys: keys.join("\n") }, { method: "post" });
+  };
   const totalCartons = sheet.reduce((n, g) => n + g.cartons, 0);
-  const siteOf = new Map(rows.filter((r) => r.siteUrl).map((r) => [r.distributor, r.siteUrl as string]));
-  const infoOf = new Map<string, SheetLineInfo>(rows.map((r) => [r.variantId, { cartonSize: r.cartonSize, productUrl: r.productUrl }]));
-  const units: Record<string, QtyUnit> = { ...data.units, ...unitOver };
+  const siteOf = new Map([
+    ...Object.entries(DISTRIBUTOR_SITES),
+    ...rows.filter((r) => r.siteUrl).map((r) => [r.distributor, r.siteUrl as string] as [string, string]),
+  ]);
+  const infoOf = new Map<string, SheetLineInfo>([
+    ...rows.map((r) => [r.variantId, { cartonSize: r.cartonSize, productUrl: r.productUrl }] as [string, SheetLineInfo]),
+    ...requestLines.map((l) => [l.variantId, { cartonSize: 5, productUrl: null }] as [string, SheetLineInfo]),
+  ]);
+  const units: Record<string, QtyUnit> = {
+    ...Object.fromEntries(data.requestItems.map((i) => [i.distributor, i.unit])),
+    ...data.units,
+    ...unitOver,
+  };
 
   // Vendors with something to order but no ordering site yet: ask for one.
   const unlinked = new Map<string, number>();
@@ -210,6 +276,29 @@ export default function Reorder() {
   };
 
   const storeLabel = STORES.find((s) => s.key === data.store)!.label;
+  const orderSheet = (
+    <OrderSheet
+      sheet={sheet}
+      total={totalCartons}
+      store={storeLabel}
+      siteOf={siteOf}
+      infoOf={infoOf}
+      units={units}
+      onUnit={onUnit}
+      onRequestCartons={setRequestCartons}
+      groupActions={(g) => {
+        const keys = g.lines.flatMap((l) => (l.request ? [l.request.key] : []));
+        if (!keys.length) return null;
+        const n = g.lines.reduce((c, l) => c + (l.request?.codes.length ?? 0), 0);
+        return (
+          <button type="button" className="btn" style={{ width: "100%", marginTop: 8 }} onClick={() => markRequestsOrdered(keys)}>
+            Checked out · mark {n} request{n === 1 ? "" : "s"} Ordered
+          </button>
+        );
+      }}
+    />
+  );
+
 
   return (
     <Shell user={data.user}>
@@ -238,6 +327,9 @@ export default function Reorder() {
       {data.problem && data.problem !== "not-connected" && (
         <section className="card"><p className="err" style={{ margin: 0 }}>Couldn’t load stock: {data.problem}</p></section>
       )}
+
+      {/* Requests sent from the Requests page still show when Shopify can't be read. */}
+      {data.problem && requestLines.length > 0 && orderSheet}
 
       {!data.problem && (
         <>
@@ -346,15 +438,7 @@ export default function Reorder() {
               )}
             </section>
 
-            <OrderSheet
-              sheet={sheet}
-              total={totalCartons}
-              store={storeLabel}
-              siteOf={siteOf}
-              infoOf={infoOf}
-              units={units}
-              onUnit={onUnit}
-            />
+            {orderSheet}
           </div>
         </>
       )}

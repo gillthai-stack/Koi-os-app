@@ -123,3 +123,19 @@ model AppSetting {
   value     String
   updatedAt DateTime @updatedAt
 }
+
+// Customer requests sent from Requests → To order onto a store's Reorder order sheet.
+// One row per product line; several requests (customers) can share it.
+model RequestOrderItem {
+  key         String   @id // store|distributor|product|stamp
+  store       String
+  name        String
+  distributor String
+  stamp       Stamp
+  cartons     Int
+  requestIds  Int[]
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+
+  @@index([store])
+}

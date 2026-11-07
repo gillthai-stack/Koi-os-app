@@ -149,3 +149,45 @@ export async function pushToSheet(r: CustomerRequest): Promise<string | null> {
 export async function lastSync(store: RequestStore): Promise<string | null> {
   return (await prisma.appSetting.findUnique({ where: { key: `requests.sync.${store}` } }))?.value ?? null;
 }
+
+// Requests sent to the Reorder page's order sheet.
+
+export function listOrderItems(store: RequestStore) {
+  return prisma.requestOrderItem.findMany({ where: { store }, orderBy: [{ distributor: "asc" }, { name: "asc" }] });
+}
+
+export type QueuedLine = { key: string; name: string; distributor: string; stamp: "ONTARIO" | "FEDERAL"; cartons: number; requestIds: number[] };
+
+/** Saves the cartons chosen for each request line; 0 takes the line off the order sheet. */
+export async function queueOrderItems(store: RequestStore, lines: QueuedLine[], updatedBy: string) {
+  for (const l of lines) {
+    const key = `${store}|${l.key}`;
+    if (l.cartons > 0) {
+      const data = { store, name: l.name, distributor: l.distributor, stamp: l.stamp, cartons: l.cartons, requestIds: l.requestIds, updatedBy };
+      await prisma.requestOrderItem.upsert({ where: { key }, create: { key, ...data }, update: data });
+    } else {
+      await prisma.requestOrderItem.deleteMany({ where: { key } });
+    }
+  }
+}
+
+export async function setOrderItemCartons(key: string, cartons: number, updatedBy: string) {
+  if (cartons > 0) await prisma.requestOrderItem.updateMany({ where: { key }, data: { cartons, updatedBy } });
+  else await prisma.requestOrderItem.deleteMany({ where: { key } });
+}
+
+/** After checkout: the lines' requests become Ordered (and on the sheet), and the lines leave the order sheet. */
+export async function markOrderItemsOrdered(keys: string[], updatedBy: string) {
+  const items = await prisma.requestOrderItem.findMany({ where: { key: { in: keys } } });
+  const errors: string[] = [];
+  let count = 0;
+  for (const id of new Set(items.flatMap((i) => i.requestIds))) {
+    const r = await prisma.customerRequest.update({ where: { id }, data: { status: "Ordered", updatedBy } }).catch(() => null);
+    if (!r) continue;
+    count++;
+    const e = await pushToSheet(r);
+    if (e) errors.push(e);
+  }
+  await prisma.requestOrderItem.deleteMany({ where: { key: { in: keys } } });
+  return { count, sheetError: errors[0] ?? null };
+}

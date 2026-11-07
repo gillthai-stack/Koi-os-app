@@ -25,6 +25,7 @@ export function OrderSheet({
   units,
   onUnit,
   groupActions,
+  onRequestCartons,
   emptyText = "Add cartons with + or Fill suggested. They’re grouped here by distributor.",
 }: {
   sheet: OrderGroup[];
@@ -36,6 +37,8 @@ export function OrderSheet({
   onUnit: (distributor: string, unit: QtyUnit) => void;
   /** Extra buttons under each distributor, e.g. marking customer requests as ordered. */
   groupActions?: (g: OrderGroup) => ReactNode;
+  /** Change (or with 0, remove) a request line's cartons. */
+  onRequestCartons?: (key: string, cartons: number) => void;
   emptyText?: string;
 }) {
   const [copied, setCopied] = useState<string | null>(null);
@@ -125,18 +128,44 @@ export function OrderSheet({
                 </div>
 
                 <ul className="sheet-lines">
-                  {g.lines.map((l) => (
+                  {g.lines.filter((l) => !l.request).map((l) => (
                     <li key={l.variantId}>
                       <div>
                         <span className="mono glow-c">{l.cartons}×</span> {l.name}
-                        <span className={`stamp ${l.stamp === "ONTARIO" ? "ont" : "fed"}`} style={{ minHeight: 22, padding: "0 8px", marginLeft: 6, fontSize: 10 }}>
-                          {l.stamp === "ONTARIO" ? "ONT" : "FED"}
-                        </span>
+                        <StampTag stamp={l.stamp} />
                         {unit === "PIECE" && <span className="muted mono" style={{ fontSize: 11 }}> = {qtyFor(g, l)} pcs</span>}
                       </div>
                     </li>
                   ))}
                 </ul>
+                {g.lines.some((l) => l.request) && (
+                  <div className="sheet-requests">
+                    <div className="kicker" style={{ fontSize: 11 }}>Requests</div>
+                    <ul className="sheet-lines">
+                      {g.lines.filter((l) => l.request).map((l) => (
+                        <li key={l.variantId}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            {onRequestCartons ? (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <button type="button" className="stepper mini" aria-label="One carton less" onClick={() => onRequestCartons(l.request!.key, l.cartons - 1)}>−</button>
+                                <span className="mono glow-c">{l.cartons}×</span>
+                                <button type="button" className="stepper mini" aria-label="One carton more" onClick={() => onRequestCartons(l.request!.key, l.cartons + 1)}>+</button>
+                              </span>
+                            ) : (
+                              <span className="mono glow-c">{l.cartons}×</span>
+                            )}
+                            <span>{l.name}</span>
+                            <StampTag stamp={l.stamp} />
+                            {unit === "PIECE" && <span className="muted mono" style={{ fontSize: 11 }}>= {qtyFor(g, l)} pcs</span>}
+                          </div>
+                          <div className="muted" style={{ fontSize: 11 }}>
+                            For {l.request!.customers.join(", ")} · {l.request!.codes.join(", ")}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                   <button
@@ -177,5 +206,13 @@ export function OrderSheet({
         </>
       )}
     </section>
+  );
+}
+
+function StampTag({ stamp }: { stamp: OrderGroup["lines"][number]["stamp"] }) {
+  return (
+    <span className={`stamp ${stamp === "ONTARIO" ? "ont" : "fed"}`} style={{ minHeight: 22, padding: "0 8px", marginLeft: 6, fontSize: 10 }}>
+      {stamp === "ONTARIO" ? "ONT" : "FED"}
+    </span>
   );
 }
