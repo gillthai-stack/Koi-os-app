@@ -1,5 +1,6 @@
 // Customer requests: statuses, IDs and reading rows copied or synced from the request sheets.
 // Pure helpers only, so `npm test` can cover them.
+import { canonicalDistributor } from "./distributors.ts";
 
 export const REQUEST_STATUSES = [
   "New",
@@ -231,4 +232,47 @@ export function planSheetWrite(
     values[col] = cellValue(req, f);
   }
   return { kind: "append", values };
+}
+
+/** Statuses that still need ordering from a distributor. */
+export const TO_ORDER_STATUSES: readonly string[] = STATUS_GROUPS.find((g) => g.key === "order")!.statuses;
+
+export type RequestOrderLine = {
+  key: string;
+  name: string;
+  distributor: string;
+  stamp: "ONTARIO" | "FEDERAL";
+  /** Pieces customers asked for, minus what's already set aside. */
+  wanted: number;
+  customers: string[];
+  requestIds: number[];
+  codes: string[];
+};
+
+/** Ontario only when the request says so (e.g. "[ONT]" or "ONT"); everything else is Federal. */
+export function requestStamp(product: string): "ONTARIO" | "FEDERAL" {
+  return /\bONT(ARIO)?\b/i.test(product) ? "ONTARIO" : "FEDERAL";
+}
+
+/** Open requests that need ordering, one line per product and distributor (several customers can share a line). */
+export function requestOrderLines(
+  requests: { id: number; code: string; customer: string; product: string; distributor: string | null; status: string; qtyWanted: number | null; qtySetAside: number | null }[],
+): RequestOrderLine[] {
+  const lines = new Map<string, RequestOrderLine>();
+  for (const r of requests) {
+    if (!TO_ORDER_STATUSES.includes(r.status)) continue;
+    const distributor = canonicalDistributor(r.distributor);
+    const stamp = requestStamp(r.product);
+    const key = `${distributor}|${squash(r.product)}|${stamp}`;
+    let l = lines.get(key);
+    if (!l) {
+      l = { key, name: r.product.trim(), distributor, stamp, wanted: 0, customers: [], requestIds: [], codes: [] };
+      lines.set(key, l);
+    }
+    l.wanted += Math.max(0, (r.qtyWanted ?? 1) - (r.qtySetAside ?? 0));
+    if (!l.customers.includes(r.customer)) l.customers.push(r.customer);
+    l.requestIds.push(r.id);
+    l.codes.push(r.code);
+  }
+  return [...lines.values()].sort((a, b) => a.distributor.localeCompare(b.distributor) || a.name.localeCompare(b.name));
 }

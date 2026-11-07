@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextCode, normalizeStatus, parsePasted, parseRequestRows, planSheetWrite, sheetKey } from "./requests.ts";
+import { nextCode, normalizeStatus, parsePasted, parseRequestRows, planSheetWrite, requestOrderLines, sheetKey } from "./requests.ts";
 
 test("status spellings from the sheet map to our statuses", () => {
   assert.equal(normalizeStatus("Ready - set aside"), "Ready – set aside");
@@ -81,4 +81,22 @@ test("keep-in-stock rows without IDs match by product and customer", () => {
     distributor: null, type: null, qtyWanted: null, qtySetAside: null, status: "Standing order", priority: null, notes: "Stock it. Weekly",
   });
   assert.deepEqual(plan, { kind: "update", cells: [{ row: 1, col: 4, value: "Stock it. Weekly" }] });
+});
+
+test("requests to order are grouped per product and distributor", () => {
+  const base = { qtySetAside: null as number | null };
+  const lines = requestOrderLines([
+    { ...base, id: 1, code: "M-011", customer: "Ali", product: "Vuse GO8K [Creamy Tobacco]", distributor: "Valor Distributions", status: "Waiting on stock", qtyWanted: 1 },
+    { ...base, id: 2, code: "M-021", customer: "Omar", product: "vuse go8k [creamy tobacco]", distributor: "Valor", status: "New", qtyWanted: 2 },
+    { ...base, id: 3, code: "M-028", customer: "Nina", product: "GCore SN [Peach Ice 20]", distributor: "GCore", status: "Order on request", qtyWanted: 2, qtySetAside: 1 },
+    { ...base, id: 4, code: "M-001", customer: "Ashley", product: "Juiced Up [Kiwi]", distributor: "Valor Distributions", status: "Ready – set aside", qtyWanted: 5 },
+    { ...base, id: 5, code: "M-053", customer: "Junc", product: "Berry Drop SN [Dragonfruit 20] ONT", distributor: "", status: "Waiting on stock", qtyWanted: 2 },
+  ]);
+  assert.equal(lines.length, 3);
+  const gcore = lines.find((l) => l.distributor === "GCore Canada")!;
+  assert.equal(gcore.wanted, 1);
+  const vuse = lines.find((l) => l.distributor === "Valor Distributions")!;
+  assert.deepEqual([vuse.wanted, vuse.customers, vuse.codes], [3, ["Ali", "Omar"], ["M-011", "M-021"]]);
+  const none = lines.find((l) => l.distributor === "No distributor")!;
+  assert.equal(none.stamp, "ONTARIO");
 });

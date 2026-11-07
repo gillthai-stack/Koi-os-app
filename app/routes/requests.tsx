@@ -3,10 +3,11 @@
 import { useMemo, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from "react-router";
 import { Form, Link, useActionData, useFetcher, useLoaderData, useNavigation } from "react-router";
+import { RequestOrder } from "../components/RequestOrder";
 import { Hero, Shell } from "../components/Shell";
 import prisma from "../db.server";
 import { requireUser } from "../lib/auth.server";
-import { DISTRIBUTOR_SITES } from "../lib/distributors";
+import { DISTRIBUTOR_SITES, canonicalDistributor } from "../lib/distributors";
 import { KEEP_IN_STOCK_TAB, REQUEST_TABS, SHEET_NAME, sheetConfig } from "../lib/google.server";
 import { STORES } from "../lib/ordering";
 import {
@@ -15,10 +16,12 @@ import {
   normalizeStatus,
   parsePasted,
   parseRequestRows,
+  requestOrderLines,
   statusTone,
   type RequestStore,
   type StatusGroupKey,
 } from "../lib/requests";
+import { loadQtyUnits, saveQtyUnit } from "../lib/stock.server";
 import { addRequest, autoSync, deleteRequest, importRows, lastSync, listRequests, pushToSheet, syncFromSheet } from "../lib/requests.server";
 
 export const meta: MetaFunction = () => [{ title: "Requests · KOI//OS" }];
@@ -42,9 +45,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const syncError = await autoSync(store, user.username);
   const [requests, syncedAt] = await Promise.all([listRequests(store), lastSync(store)]);
   const sheet = sheetConfig();
+  // Ordering sites: our known distributors plus any linked on the Reorder page.
+  const links = await prisma.distributorLink.findMany();
+  const sites: Record<string, string> = { ...DISTRIBUTOR_SITES };
+  for (const l of links) sites[canonicalDistributor(l.distributor)] ??= l.url;
+  const distributors = [...new Set(requests.map((r) => canonicalDistributor(r.distributor)))];
+  const units = await loadQtyUnits(distributors.map((d) => ({ distributor: d, siteUrl: sites[d] ?? null })));
   return {
     user,
     store,
+    sites,
+    units,
     requests: requests.map((r) => ({ ...r, createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() })),
     sheet: { connected: sheet.connected, email: sheet.email, name: SHEET_NAME, tab: `${REQUEST_TABS[store]}” + “${KEEP_IN_STOCK_TAB}`, syncedAt, syncError },
   };
@@ -93,6 +104,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { saved: id, sheetError: await pushToSheet(r) };
   }
 
+  if (intent === "unit") {
+    const distributor = String(form.get("distributor") ?? "").trim();
+    if (distributor) await saveQtyUnit(distributor, form.get("unit") === "PIECE" ? "PIECE" : "CARTON", user.username);
+    return { saved: 0 };
+  }
+
+  if (intent === "ordered") {
+    const ids = String(form.get("ids") ?? "").split(",").map(Number).filter((n) => n > 0);
+    const errors: string[] = [];
+    for (const id of ids) {
+      const r = await prisma.customerRequest.update({ where: { id }, data: { status: "Ordered", updatedBy: user.username } });
+      const e = await pushToSheet(r);
+      if (e) errors.push(e);
+    }
+    return { ok: `Marked ${ids.length} request${ids.length === 1 ? "" : "s"} Ordered.`, sheetError: errors[0] ?? null };
+  }
+
   if (intent === "delete") {
     if (user.role !== "OWNER") return { error: "Only the owner can delete requests." };
     await deleteRequest(Number(form.get("id")));
@@ -129,6 +157,9 @@ export default function Requests() {
   const result = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
   const [group, setGroup] = useState<StatusGroupKey>("open");
+  const [ordering, setOrdering] = useState(false);
+  const orderLines = useMemo(() => requestOrderLines(data.requests), [data.requests]);
+  const siteOf = useMemo(() => new Map(Object.entries(data.sites)), [data.sites]);
   const [q, setQ] = useState("");
 
   const count = (k: StatusGroupKey) => {
@@ -161,11 +192,25 @@ export default function Requests() {
 
       <div className="tiles">
         <Tile label="Open" value={count("open")} tone="glow-c" kanji="開" />
-        <Tile label="To order" value={count("order")} tone="glow-m" kanji="注" />
+        <button type="button" className="tile-button" onClick={() => setOrdering(true)} aria-label="Order for requests">
+          <Tile label="To order · tap to order" value={count("order")} tone="glow-m" kanji="注" />
+        </button>
         <Tile label="Ready for pickup" value={count("ready")} tone="glow-l" kanji="済" />
         <Tile label="Standing orders" value={count("standing")} tone="glow-v" kanji="常" />
       </div>
 
+      {ordering ? (
+        <RequestOrder
+          key={data.store}
+          lines={orderLines}
+          store={data.store}
+          storeLabel={storeLabel}
+          siteOf={siteOf}
+          units={data.units}
+          onClose={() => setOrdering(false)}
+        />
+      ) : (
+        <>
       <section className="card">
         <div className="card-head">
           <h2 className="h" style={{ margin: 0, fontSize: 18 }}>New request · {storeLabel}</h2>
@@ -223,6 +268,9 @@ export default function Requests() {
           </div>
         )}
       </section>
+
+        </>
+      )}
 
       <SheetCard key={formKey(result)} store={data.store} sheet={data.sheet} busy={busy} />
     </Shell>

@@ -221,3 +221,6 @@ select.field{appearance:auto}
 .status-select.ok{border-color:rgba(163,230,53,.5);color:#BEF264}
 .status-select.muted{color:#7C84A3}
 .status-select option{color:#E6E9F5;background:#0E0C26}
+/* A stat tile that opens something */
+.tile-button{all:unset;display:block;cursor:pointer;border-radius:14px}
+.tile-button:hover .stat-tile,.tile-button:focus-visible .stat-tile{border-color:#F472B6;box-shadow:0 0 18px rgba(244,114,182,.35)}
