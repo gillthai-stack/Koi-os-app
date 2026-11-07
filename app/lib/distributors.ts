@@ -9,6 +9,22 @@ export const DISTRIBUTOR_SITES: Record<string, string> = {
   "GCore Canada": "https://gcorecanada.com/",
 };
 
+// Distributor names as people write them (e.g. on the request sheet) → our names above.
+const DISTRIBUTOR_ALIASES: [RegExp, string][] = [
+  [/^gcore/i, "GCore Canada"],
+  [/^valor/i, "Valor Distributions"],
+  [/^pacific/i, "Pacific Smoke"],
+  [/^nimbus/i, "NimbusDistro"],
+  [/^globe\s*11/i, "globe11"],
+];
+
+/** Our name for a distributor, so requests and reorders share sites, units and GCore's split. */
+export function canonicalDistributor(name: string | null | undefined): string {
+  const n = (name ?? "").trim();
+  if (!n) return "No distributor";
+  return DISTRIBUTOR_ALIASES.find(([re]) => re.test(n))?.[1] ?? n;
+}
+
 /** How a site's cart is filled by the KOI//OS Cart extension. */
 export type Platform = "magento" | "shopify" | "woocommerce" | "generic";
 

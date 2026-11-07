@@ -1,6 +1,6 @@
 // Order sheet: cartons grouped by distributor. Each group copies a ready-to-paste prompt
 // for Claude in Chrome, which fills that distributor's cart in the user's own browser.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { cartQty, type QtyUnit } from "../lib/distributors";
 import type { OrderGroup } from "../lib/ordering";
 import { orderPrompt } from "../lib/prompt";
@@ -24,6 +24,8 @@ export function OrderSheet({
   infoOf,
   units,
   onUnit,
+  groupActions,
+  emptyText = "Add cartons with + or Fill suggested. They’re grouped here by distributor.",
 }: {
   sheet: OrderGroup[];
   total: number;
@@ -32,6 +34,9 @@ export function OrderSheet({
   infoOf: Map<string, SheetLineInfo>;
   units: Record<string, QtyUnit>;
   onUnit: (distributor: string, unit: QtyUnit) => void;
+  /** Extra buttons under each distributor, e.g. marking customer requests as ordered. */
+  groupActions?: (g: OrderGroup) => ReactNode;
+  emptyText?: string;
 }) {
   const [copied, setCopied] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -70,7 +75,7 @@ export function OrderSheet({
         <span className="idx">{total} CTN</span>
       </div>
       {sheet.length === 0 ? (
-        <p className="muted" style={{ fontSize: 14 }}>Add cartons with + or Fill suggested. They’re grouped here by distributor.</p>
+        <p className="muted" style={{ fontSize: 14 }}>{emptyText}</p>
       ) : (
         <>
           <p className="muted" style={{ fontSize: 12, margin: 0 }}>
@@ -152,6 +157,7 @@ export function OrderSheet({
                 {open === g.key && (
                   <textarea className="field prompt-box" readOnly value={prompt} onFocus={(e) => e.currentTarget.select()} />
                 )}
+                {groupActions?.(g)}
               </div>
             );
           })}
