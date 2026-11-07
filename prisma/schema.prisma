@@ -90,3 +90,36 @@ model DistributorSetting {
   updatedAt   DateTime @updatedAt
   updatedBy   String?
 }
+
+// A customer's request for something we don't have on the shelf, per store.
+model CustomerRequest {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique // M-001 (Mississauga), B-001 (Brampton), K-001 (keep in stock)
+  store       String // mississauga | brampton
+  customer    String
+  phone       String?
+  product     String
+  distributor String?
+  type        String?
+  qtyWanted   Int?
+  qtySetAside Int?
+  status      String   @default("New")
+  priority    String?
+  repeatDays  Int?
+  lastDate    String? // as written on the sheet
+  notes       String?
+  source      String   @default("manual") // manual | sheet | paste
+  sheetKey    String?  @unique
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+
+  @@index([store, status])
+}
+
+// Small app-wide values, such as when the request sheet was last synced.
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

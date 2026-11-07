@@ -29,3 +29,6 @@ services:
         generateValue: true
       - key: SETUP_CODE
         generateValue: true
+      # Customer requests: a Google service account key (JSON) that can read the request sheet.
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
