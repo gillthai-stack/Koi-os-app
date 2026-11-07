@@ -1,4 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from "react-router";
+import { useEffect, useState } from "react";
 import { Form, redirect, useActionData, useNavigation } from "react-router";
 import prisma from "../db.server";
 import { Gate } from "../components/Shell";
@@ -7,6 +8,8 @@ import { cleanUsername, currentUser, startSession, verifyPassword } from "../lib
 export const meta: MetaFunction = () => [{ title: "Log in · KOI//OS" }];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const url = new URL(request.url);
+  if (url.searchParams.get("shop")) throw redirect(`/app?${url.searchParams.toString()}`);
   if (await currentUser(request)) throw redirect("/");
   if ((await prisma.user.count()) === 0) throw redirect("/setup");
   return null;
@@ -23,9 +26,38 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return startSession(user.id);
 };
 
+/** True when the page is shown inside another site's frame, where its login cookie is blocked. */
+function useFramed(): boolean {
+  const [framed, setFramed] = useState(false);
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setFramed(window.self !== window.top);
+    } catch {
+      setFramed(true);
+    }
+  }, []);
+  return framed;
+}
+
 export default function Login() {
   const data = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
+  const framed = useFramed();
+  if (framed) {
+    return (
+      <Gate title="Open KOI//OS in its own tab">
+        <div className="stack">
+          <p className="muted" style={{ fontSize: 14, textAlign: "center", margin: 0 }}>
+            Logins don’t work inside Shopify admin. Open the app in a new tab and log in there.
+          </p>
+          <a className="btn primary" href="/login" target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}>
+            Open KOI//OS
+          </a>
+        </div>
+      </Gate>
+    );
+  }
   return (
     <Gate title="Staff log in">
       <Form method="post" className="stack">
