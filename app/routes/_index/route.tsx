@@ -2,7 +2,7 @@
 // with an order sheet grouped by distributor (GCore split by stamp).
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction, ShouldRevalidateFunction } from "react-router";
-import { Link, useFetcher, useLoaderData, useNavigation } from "react-router";
+import { Link, redirect, useFetcher, useLoaderData, useNavigation } from "react-router";
 import { Hero, Shell } from "../../components/Shell";
 import { OrderSheet, type SheetLineInfo } from "../../components/OrderSheet";
 import prisma from "../../db.server";
@@ -28,8 +28,12 @@ function storeFrom(url: URL): StoreKey {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  // Opened from Shopify admin: go to the embedded page, which links out to the full app.
+  // (Logins can't stick inside the admin's frame, because browsers block its cookies.)
+  const url = new URL(request.url);
+  if (url.searchParams.get("shop")) throw redirect(`/app?${url.searchParams.toString()}`);
   const user = await requireUser(request);
-  const store = storeFrom(new URL(request.url));
+  const store = storeFrom(url);
   try {
     const table = await loadReorderTable(store);
     return { user, store, ...table, problem: null as null | "not-connected" | string };
