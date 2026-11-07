@@ -1,6 +1,6 @@
 // KOI//OS reorder page: top 30 sellers per store, filtered to what needs ordering,
 // with an order sheet grouped by distributor (GCore split by stamp).
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction, ShouldRevalidateFunction } from "react-router";
 import { Link, useFetcher, useLoaderData, useNavigation } from "react-router";
 import { Hero, Shell } from "../../components/Shell";
@@ -132,9 +132,7 @@ export default function Reorder() {
   const [filter, setFilter] = useState<Filter>("needs");
   const [over, setOver] = useState<Record<string, Override>>({});
   const [linked, setLinked] = useState<Record<string, LinkOverride>>({});
-  const [productUrls, setProductUrls] = useState<Record<string, string>>({});
   const [unitOver, setUnitOver] = useState<Record<string, QtyUnit>>({});
-  const onProductUrl = useCallback((id: string, url: string) => setProductUrls((m) => (m[id] === url ? m : { ...m, [id]: url })), []);
   const onUnit = (distributor: string, unit: QtyUnit) => {
     setUnitOver((m) => ({ ...m, [distributor]: unit }));
     fetcher.submit({ intent: "unit", distributor, unit }, { method: "post" });
@@ -155,10 +153,9 @@ export default function Reorder() {
           suggestedCartons: cartonsFor(r.needPcs, cartonSize),
           distributor: link?.distributor ?? r.distributor,
           siteUrl: link?.url ?? r.siteUrl,
-          productUrl: productUrls[r.variantId] ?? r.productUrl,
         };
       }),
-    [data.rows, over, linked, productUrls],
+    [data.rows, over, linked],
   );
 
   const top = rows.filter((r) => r.kind === "top");
@@ -353,7 +350,6 @@ export default function Reorder() {
               infoOf={infoOf}
               units={units}
               onUnit={onUnit}
-              onProductUrl={onProductUrl}
             />
           </div>
         </>
