@@ -19,7 +19,7 @@ import {
   type RequestStore,
   type StatusGroupKey,
 } from "../lib/requests";
-import { addRequest, importRows, lastSync, listRequests, syncFromSheet } from "../lib/requests.server";
+import { addRequest, autoSync, deleteRequest, importRows, lastSync, listRequests, pushToSheet, syncFromSheet } from "../lib/requests.server";
 
 export const meta: MetaFunction = () => [{ title: "Requests · KOI//OS" }];
 
@@ -39,13 +39,14 @@ const int = (v: FormDataEntryValue | null) => {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
   const store = storeFrom(new URL(request.url).searchParams.get("store"));
+  const syncError = await autoSync(store, user.username);
   const [requests, syncedAt] = await Promise.all([listRequests(store), lastSync(store)]);
   const sheet = sheetConfig();
   return {
     user,
     store,
     requests: requests.map((r) => ({ ...r, createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() })),
-    sheet: { connected: sheet.connected, email: sheet.email, name: SHEET_NAME, tab: `${REQUEST_TABS[store]}” + “${KEEP_IN_STOCK_TAB}`, syncedAt },
+    sheet: { connected: sheet.connected, email: sheet.email, name: SHEET_NAME, tab: `${REQUEST_TABS[store]}” + “${KEEP_IN_STOCK_TAB}`, syncedAt, syncError },
   };
 };
 
@@ -78,7 +79,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
       user.username,
     );
-    return { ok: `Added ${r.code} for ${r.customer}.`, at: Date.now() };
+    const sheetError = await pushToSheet(r);
+    return { ok: `Added ${r.code} for ${r.customer}${sheetError ? "" : sheetConfig().connected ? " and to the sheet" : ""}.`, at: Date.now(), sheetError };
   }
 
   if (intent === "update") {
@@ -87,20 +89,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (form.has("status")) data.status = normalizeStatus(String(form.get("status")));
     if (form.has("qtySetAside")) data.qtySetAside = int(form.get("qtySetAside"));
     if (form.has("notes")) data.notes = clean(form.get("notes"));
-    await prisma.customerRequest.update({ where: { id }, data: { ...data, updatedBy: user.username } });
-    return { saved: id };
+    const r = await prisma.customerRequest.update({ where: { id }, data: { ...data, updatedBy: user.username } });
+    return { saved: id, sheetError: await pushToSheet(r) };
   }
 
   if (intent === "delete") {
     if (user.role !== "OWNER") return { error: "Only the owner can delete requests." };
-    await prisma.customerRequest.delete({ where: { id: Number(form.get("id")) } });
+    await deleteRequest(Number(form.get("id")));
     return { ok: "Deleted." };
   }
 
   if (intent === "sync") {
     try {
-      const { added, skipped } = await syncFromSheet(store, user.username);
-      return { ok: added ? `Added ${added} new request${added === 1 ? "" : "s"} from the sheet.` : `No new requests on the sheet (${skipped} already here).` };
+      const { added, updated } = await syncFromSheet(store, user.username);
+      const parts = [added && `added ${added} new`, updated && `updated ${updated}`].filter(Boolean);
+      return { ok: parts.length ? `From the sheet: ${parts.join(", ")}.` : "Up to date with the sheet." };
     } catch (e) {
       return { error: e instanceof Error ? e.message : "Couldn't read the sheet." };
     }
@@ -184,6 +187,7 @@ export default function Requests() {
           </datalist>
         </Form>
         {result && "error" in result && result.error && <p className="err">{result.error}</p>}
+        {result && "sheetError" in result && result.sheetError && <p className="err">Saved here, but not on the sheet: {result.sheetError}</p>}
         {result && "ok" in result && result.ok && <p className="glow-l" style={{ fontSize: 14 }}>{result.ok}</p>}
       </section>
 
@@ -226,13 +230,21 @@ export default function Requests() {
 }
 
 function RequestRow({ r, owner }: { r: Row; owner: boolean }) {
-  const fetcher = useFetcher();
+  const fetcher = useFetcher<{ sheetError?: string | null }>();
+  const sheetError = fetcher.data?.sheetError;
   const pending = fetcher.formData;
   const status = pending?.has("status") ? String(pending.get("status")) : r.status;
   const save = (field: string, value: string) => fetcher.submit({ intent: "update", id: String(r.id), [field]: value }, { method: "post" });
   return (
     <tr>
-      <td className="mono muted" style={{ whiteSpace: "nowrap" }}>{r.code}</td>
+      <td className="mono muted" style={{ whiteSpace: "nowrap" }}>
+        {r.code}
+        {sheetError && (
+          <div className="err" style={{ fontSize: 11, whiteSpace: "normal", maxWidth: 140 }} title={sheetError}>
+            Not saved to sheet
+          </div>
+        )}
+      </td>
       <td style={{ minWidth: 130 }}>
         <div style={{ fontWeight: 600 }}>{r.customer}</div>
         {r.phone && (
@@ -297,7 +309,7 @@ function RequestRow({ r, owner }: { r: Row; owner: boolean }) {
   );
 }
 
-function SheetCard({ store, sheet, busy }: { store: RequestStore; sheet: { connected: boolean; email: string | null; name: string; tab: string; syncedAt: string | null }; busy: boolean }) {
+function SheetCard({ store, sheet, busy }: { store: RequestStore; sheet: { connected: boolean; email: string | null; name: string; tab: string; syncedAt: string | null; syncError: string | null }; busy: boolean }) {
   const [paste, setPaste] = useState(false);
   return (
     <section className="card">
@@ -314,7 +326,7 @@ function SheetCard({ store, sheet, busy }: { store: RequestStore; sheet: { conne
             <Form method="post">
               <input type="hidden" name="intent" value="sync" />
               <input type="hidden" name="store" value={store} />
-              <button className="btn primary" type="submit" disabled={busy}>{busy ? "Checking…" : "Check sheet for new requests"}</button>
+              <button className="btn primary" type="submit" disabled={busy}>{busy ? "Syncing…" : "Sync now"}</button>
             </Form>
           )}
           <button type="button" className="btn" onClick={() => setPaste(!paste)} aria-expanded={paste}>
@@ -323,11 +335,11 @@ function SheetCard({ store, sheet, busy }: { store: RequestStore; sheet: { conne
         </div>
       </div>
       <p className="muted" style={{ fontSize: 13, margin: 0 }}>
-        Only requests that aren’t here yet get added. After that, update them here.
         {sheet.connected
-          ? ` Reading as ${sheet.email}.`
-          : " Automatic checking needs a Google service account in Render (GOOGLE_SERVICE_ACCOUNT_JSON). Until then, copy rows from the sheet and paste them."}
+          ? `Connected as ${sheet.email}. New rows and status changes on the sheet come in when this page opens (every 2 minutes at most). Changes made here, and new requests, are written to the sheet.`
+          : "Not connected. Two-way sync needs a Google service account key in Render (GOOGLE_SERVICE_ACCOUNT_JSON) and the sheet shared with it. Until then, copy rows from the sheet and paste them."}
       </p>
+      {sheet.syncError && <p className="err" style={{ marginBottom: 0 }}>Couldn’t read the sheet: {sheet.syncError}</p>}
       {paste && (
         <Form method="post" className="stack" style={{ marginTop: 12 }}>
           <input type="hidden" name="intent" value="paste" />

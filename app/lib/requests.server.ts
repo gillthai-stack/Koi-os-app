@@ -1,7 +1,17 @@
 // Database side of customer requests.
 import prisma from "../db.server";
-import { KEEP_IN_STOCK_TAB, REQUEST_TABS, readTab } from "./google.server";
-import { KEEP_PREFIX, STORE_PREFIX, nextCode, parseRequestRows, sheetKey, type RequestInput, type RequestStore } from "./requests";
+import type { CustomerRequest } from "@prisma/client";
+import { KEEP_IN_STOCK_TAB, REQUEST_TABS, appendRow, readTab, sheetConfig, writeCells } from "./google.server";
+import {
+  KEEP_PREFIX,
+  STORE_PREFIX,
+  nextCode,
+  parseRequestRows,
+  planSheetWrite,
+  sheetKey,
+  type RequestInput,
+  type RequestStore,
+} from "./requests";
 
 /** The sheet's Store column isn't a database field; the store comes from the page. */
 function fieldsOf(input: RequestInput) {
@@ -25,9 +35,20 @@ export async function addRequest(store: RequestStore, input: RequestInput, updat
   return prisma.customerRequest.create({ data: { ...fields, code, store, source: "manual", updatedBy } });
 }
 
+const DELETED = "requests.deleted.";
+
+/** Deleted requests stay deleted: the sheet row is left alone, so remember not to import it again. */
+export async function deleteRequest(id: number) {
+  const r = await prisma.customerRequest.delete({ where: { id } });
+  const key = r.sheetKey ?? sheetKey(r.store, r);
+  await prisma.appSetting.upsert({ where: { key: DELETED + r.code }, create: { key: DELETED + r.code, value: key }, update: { value: key } });
+  return r;
+}
+
 /**
- * Adds rows from the sheet (or pasted from it) that aren't in the app yet. Rows already here,
- * by ID or by customer + phone + product, are left alone: once imported, the app is the record.
+ * Adds rows from the sheet (or pasted from it) that aren't in the app yet. With `updateSince`,
+ * a row already here takes the sheet's status, set-aside count and notes, unless someone changed
+ * it in the app after that time (the app's change is written to the sheet instead).
  */
 export async function importRows(
   store: RequestStore,
@@ -35,42 +56,94 @@ export async function importRows(
   updatedBy: string,
   source: "sheet" | "paste",
   prefix: string = STORE_PREFIX[store],
+  updateSince: Date | null = null,
 ) {
-  const existing = await prisma.customerRequest.findMany({ select: { code: true, sheetKey: true, store: true, customer: true, phone: true, product: true } });
-  const codes = new Set(existing.map((r) => r.code));
-  const keys = new Set(existing.flatMap((r) => [r.sheetKey, sheetKey(r.store, r)].filter(Boolean) as string[]));
+  const existing = await prisma.customerRequest.findMany();
+  const byCode = new Map(existing.map((r) => [r.code, r]));
+  const byKey = new Map(existing.flatMap((r) => [r.sheetKey, sheetKey(r.store, r)].filter(Boolean).map((k) => [k as string, r] as const)));
+  const deleted = await prisma.appSetting.findMany({ where: { key: { startsWith: DELETED } } });
+  const gone = new Set(deleted.flatMap((d) => [d.key.slice(DELETED.length), d.value]));
   const allCodes = existing.map((r) => r.code);
   let added = 0;
+  let updated = 0;
   for (const row of rows) {
     const key = sheetKey(store, row);
-    if (keys.has(key) || (row.code && codes.has(row.code))) continue;
+    if (gone.has(key) || (row.code && gone.has(row.code))) continue;
+    const here = (row.code && byCode.get(row.code)) || byKey.get(key);
+    if (here) {
+      if (updateSince && here.updatedAt <= updateSince) {
+        const change: Partial<CustomerRequest> = {};
+        if (row.status !== here.status) change.status = row.status;
+        if (row.qtySetAside !== here.qtySetAside) change.qtySetAside = row.qtySetAside;
+        if ((row.notes ?? null) !== (here.notes ?? null)) change.notes = row.notes;
+        if (Object.keys(change).length) {
+          // Keep updatedAt at the sync time so this doesn't count as an app edit.
+          await prisma.customerRequest.update({ where: { id: here.id }, data: { ...change, updatedBy: "sheet", updatedAt: updateSince } });
+          updated++;
+        }
+      }
+      continue;
+    }
     const fields = fieldsOf(row);
     const code = row.code ?? nextCode(prefix, allCodes);
     await prisma.customerRequest.create({ data: { ...fields, code, store, source, sheetKey: key, updatedBy } });
-    codes.add(code);
-    keys.add(key);
     allCodes.push(code);
+    byCode.set(code, { code } as CustomerRequest);
     added++;
   }
-  return { added, skipped: rows.length - added };
+  return { added, updated, skipped: rows.length - added - updated };
 }
 
 export async function syncFromSheet(store: RequestStore, updatedBy: string) {
+  const prev = await lastSync(store);
+  // Rows edited in the app after the last pull keep the app's values.
+  const since = prev ? new Date(prev) : null;
   const rows = parseRequestRows(await readTab(REQUEST_TABS[store])).filter((r) => !r.store || r.store === store);
-  const result = await importRows(store, rows, updatedBy, "sheet");
+  const result = await importRows(store, rows, updatedBy, "sheet", STORE_PREFIX[store], since);
   // Keep-in-stock asks for this store become standing orders with K-### IDs.
-  const keep = parseRequestRows(await readTab(KEEP_IN_STOCK_TAB), "Standing order")
-    .filter((r) => r.store === store)
-    .map((r) => (r.customer === "(no name)" ? { ...r, customer: "Keep in stock" } : r));
-  const kept = await importRows(store, keep, updatedBy, "sheet", KEEP_PREFIX);
+  const keep = parseRequestRows(await readTab(KEEP_IN_STOCK_TAB), "Standing order").filter((r) => r.store === store);
+  const kept = await importRows(store, keep, updatedBy, "sheet", KEEP_PREFIX, since);
   result.added += kept.added;
+  result.updated += kept.updated;
   result.skipped += kept.skipped;
+  // Stamped after the import, so rows it just created don't look like app edits next time.
+  const now = new Date();
   await prisma.appSetting.upsert({
     where: { key: `requests.sync.${store}` },
-    create: { key: `requests.sync.${store}`, value: new Date().toISOString() },
-    update: { value: new Date().toISOString() },
+    create: { key: `requests.sync.${store}`, value: now.toISOString() },
+    update: { value: now.toISOString() },
   });
   return result;
+}
+
+const AUTO_SYNC_MS = 2 * 60 * 1000;
+
+/** Pulls from the sheet when the page opens, at most every 2 minutes. Never blocks the page on errors. */
+export async function autoSync(store: RequestStore, updatedBy: string): Promise<string | null> {
+  if (!sheetConfig().connected) return null;
+  const prev = await lastSync(store);
+  if (prev && Date.now() - new Date(prev).getTime() < AUTO_SYNC_MS) return null;
+  try {
+    await syncFromSheet(store, updatedBy);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : "Couldn't read the sheet.";
+  }
+}
+
+/** Writes one request's status, set-aside count and notes to its sheet row, or appends it. */
+export async function pushToSheet(r: CustomerRequest): Promise<string | null> {
+  if (!sheetConfig().connected) return null;
+  const store = r.store as RequestStore;
+  const tab = r.code.startsWith(`${KEEP_PREFIX}-`) ? KEEP_IN_STOCK_TAB : REQUEST_TABS[store];
+  try {
+    const plan = planSheetWrite(await readTab(tab), r);
+    if (plan.kind === "update") await writeCells(tab, plan.cells);
+    if (plan.kind === "append") await appendRow(tab, plan.values);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : "Couldn't update the sheet.";
+  }
 }
 
 export async function lastSync(store: RequestStore): Promise<string | null> {
