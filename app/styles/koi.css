@@ -213,3 +213,11 @@ select.field{appearance:auto}
 .steps{margin:14px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:12px;line-height:1.5}
 .sheet-lines li{display:flex;flex-direction:column;gap:2px}
 .prompt-box{width:100%;min-height:180px;margin-top:8px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.5;resize:vertical}
+/* Request status picker, tinted like the status pills */
+.status-select{font-size:13px;font-weight:600}
+.status-select.new{border-color:rgba(253,224,71,.55);color:#FEF08A}
+.status-select.low{border-color:rgba(244,114,182,.6);color:#F9A8D4}
+.status-select.warn{border-color:rgba(167,139,250,.6);color:#DDD6FE}
+.status-select.ok{border-color:rgba(163,230,53,.5);color:#BEF264}
+.status-select.muted{color:#7C84A3}
+.status-select option{color:#E6E9F5;background:#0E0C26}
