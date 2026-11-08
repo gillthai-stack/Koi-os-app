@@ -26,6 +26,7 @@ export function OrderSheet({
   onUnit,
   groupActions,
   onRequestCartons,
+  onStamp,
   emptyText = "Add cartons with + or Fill suggested. They’re grouped here by distributor.",
 }: {
   sheet: OrderGroup[];
@@ -39,6 +40,8 @@ export function OrderSheet({
   groupActions?: (g: OrderGroup) => ReactNode;
   /** Change (or with 0, remove) a request line's cartons. */
   onRequestCartons?: (key: string, cartons: number) => void;
+  /** Switch a line between Ontario and Federal stamps. */
+  onStamp?: (line: OrderGroup["lines"][number], stamp: OrderGroup["lines"][number]["stamp"]) => void;
   emptyText?: string;
 }) {
   const [copied, setCopied] = useState<string | null>(null);
@@ -132,7 +135,7 @@ export function OrderSheet({
                     <li key={l.variantId}>
                       <div>
                         <span className="mono glow-c">{l.cartons}×</span> {l.name}
-                        <StampTag stamp={l.stamp} />
+                        <StampTag stamp={l.stamp} onToggle={onStamp && ((to) => onStamp(l, to))} />
                         {unit === "PIECE" && <span className="muted mono" style={{ fontSize: 11 }}> = {qtyFor(g, l)} pcs</span>}
                       </div>
                     </li>
@@ -155,7 +158,7 @@ export function OrderSheet({
                               <span className="mono glow-c">{l.cartons}×</span>
                             )}
                             <span>{l.name}</span>
-                            <StampTag stamp={l.stamp} />
+                            <StampTag stamp={l.stamp} onToggle={onStamp && ((to) => onStamp(l, to))} />
                             {unit === "PIECE" && <span className="muted mono" style={{ fontSize: 11 }}>= {qtyFor(g, l)} pcs</span>}
                           </div>
                           <div className="muted" style={{ fontSize: 11 }}>
@@ -209,10 +212,27 @@ export function OrderSheet({
   );
 }
 
-function StampTag({ stamp }: { stamp: OrderGroup["lines"][number]["stamp"] }) {
+function StampTag({
+  stamp,
+  onToggle,
+}: {
+  stamp: OrderGroup["lines"][number]["stamp"];
+  onToggle?: (to: OrderGroup["lines"][number]["stamp"]) => void;
+}) {
+  const style = { minHeight: 22, padding: "0 8px", marginLeft: 6, fontSize: 10 };
+  const label = stamp === "ONTARIO" ? "ONT" : "FED";
+  const cls = `stamp ${stamp === "ONTARIO" ? "ont" : "fed"}`;
+  if (!onToggle) return <span className={cls} style={style}>{label}</span>;
   return (
-    <span className={`stamp ${stamp === "ONTARIO" ? "ont" : "fed"}`} style={{ minHeight: 22, padding: "0 8px", marginLeft: 6, fontSize: 10 }}>
-      {stamp === "ONTARIO" ? "ONT" : "FED"}
-    </span>
+    <button
+      type="button"
+      className={cls}
+      style={style}
+      title="Tap to switch stamp"
+      aria-label={`Stamp ${label}, tap to switch`}
+      onClick={() => onToggle(stamp === "ONTARIO" ? "FEDERAL" : "ONTARIO")}
+    >
+      {label}
+    </button>
   );
 }

@@ -8,7 +8,7 @@ import { OrderSheet, type SheetLineInfo } from "../../components/OrderSheet";
 import prisma from "../../db.server";
 import { requireUser } from "../../lib/auth.server";
 import { DISTRIBUTOR_SITES, defaultQtyUnit, hostOf, type QtyUnit } from "../../lib/distributors";
-import { listOrderItems, markOrderItemsOrdered, setOrderItemCartons } from "../../lib/requests.server";
+import { listOrderItems, markOrderItemsOrdered, setOrderItemCartons, setOrderItemStamp } from "../../lib/requests.server";
 import { STORES, buildOrderSheet, cartonsFor, type Stamp, type StoreKey } from "../../lib/ordering";
 import {
   ShopifyNotConnected,
@@ -81,6 +81,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
   if (form.get("intent") === "request-cartons") {
     await setOrderItemCartons(String(form.get("key")), Math.max(0, Number(form.get("cartons")) || 0), user.username);
+    return { ok: true };
+  }
+  if (form.get("intent") === "request-stamp") {
+    const stamp = form.get("stamp") === "ONTARIO" ? "ONTARIO" : "FEDERAL";
+    await setOrderItemStamp(String(form.get("key")), stamp, user.username);
     return { ok: true };
   }
   if (form.get("intent") === "requests-ordered") {
@@ -177,6 +182,7 @@ export default function Reorder() {
   };
   const [qty, setQty] = useSavedOrder(data.store);
   const [reqCartons, setReqCartons] = useState<Record<string, number>>({});
+  const [reqStamps, setReqStamps] = useState<Record<string, Stamp>>({});
   const loading = nav.state === "loading";
 
   const rows = useMemo(
@@ -208,7 +214,7 @@ export default function Reorder() {
     : fresh;
 
   const requestLines = data.requestItems
-    .map((i) => ({ ...i, cartons: reqCartons[i.key] ?? i.cartons }))
+    .map((i) => ({ ...i, cartons: reqCartons[i.key] ?? i.cartons, stamp: reqStamps[i.key] ?? i.stamp }))
     .filter((i) => i.cartons > 0)
     .map((i) => ({
       variantId: `req:${i.key}`,
@@ -228,6 +234,16 @@ export default function Reorder() {
     const n = Math.max(0, cartons);
     setReqCartons((m) => ({ ...m, [key]: n }));
     fetcher.submit({ intent: "request-cartons", key, cartons: String(n) }, { method: "post" });
+  };
+  const setLineStamp = (line: { variantId: string; request?: { key: string } }, stamp: Stamp) => {
+    if (line.request) {
+      const key = line.request.key;
+      setReqStamps((m) => ({ ...m, [key]: stamp }));
+      fetcher.submit({ intent: "request-stamp", key, stamp }, { method: "post" });
+      return;
+    }
+    const row = rows.find((r) => r.variantId === line.variantId);
+    if (row) saveSetting(row, { stamp });
   };
   const markRequestsOrdered = (keys: string[]) => {
     setReqCartons((m) => ({ ...m, ...Object.fromEntries(keys.map((k) => [k, 0])) }));
@@ -286,6 +302,7 @@ export default function Reorder() {
       units={units}
       onUnit={onUnit}
       onRequestCartons={setRequestCartons}
+      onStamp={setLineStamp}
       groupActions={(g) => {
         const keys = g.lines.flatMap((l) => (l.request ? [l.request.key] : []));
         if (!keys.length) return null;
