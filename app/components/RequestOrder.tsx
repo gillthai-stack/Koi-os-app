@@ -1,55 +1,51 @@
-// "To order" view on the Requests page: open requests grouped by distributor, with the same
-// order sheet and Claude prompts as Reorder, and a button to mark each distributor's requests ordered.
-import { useMemo, useState } from "react";
-import { useFetcher } from "react-router";
-import type { QtyUnit } from "../lib/distributors";
-import { buildOrderSheet, type Stamp } from "../lib/ordering";
+// "To order" view on the Requests page: pick how many cartons to order for each requested item,
+// then send them to the Reorder page, where they join that distributor's order and Claude prompt.
+import { useState } from "react";
+import { Form, useNavigation } from "react-router";
+import type { Stamp } from "../lib/ordering";
 import type { RequestOrderLine } from "../lib/requests";
-import { OrderSheet, type SheetLineInfo } from "./OrderSheet";
 
 export function RequestOrder({
   lines,
   store,
   storeLabel,
-  siteOf,
-  units: savedUnits,
+  queued,
   onClose,
 }: {
   lines: RequestOrderLine[];
   store: string;
   storeLabel: string;
-  siteOf: Map<string, string>;
-  units: Record<string, QtyUnit>;
+  /** Cartons already sent to Reorder, by line key. */
+  queued: Record<string, { cartons: number; stamp: Stamp }>;
   onClose: () => void;
 }) {
-  const fetcher = useFetcher();
-  // One carton of each to start; set a line to 0 to leave it out.
-  const [picked, setQty] = useState<Record<string, number>>({});
-  const qty = (key: string) => picked[key] ?? 1;
+  const busy = useNavigation().state !== "idle";
+  // Start from what's already on Reorder, else one carton; 0 leaves a line out.
+  const [picked, setPicked] = useState<Record<string, number>>({});
   const [stamps, setStamps] = useState<Record<string, Stamp>>({});
-  const [unitOver, setUnitOver] = useState<Record<string, QtyUnit>>({});
-  const units = { ...savedUnits, ...unitOver };
-  const stampOf = (l: RequestOrderLine) => stamps[l.key] ?? l.stamp;
-  const byKey = useMemo(() => new Map(lines.map((l) => [l.key, l])), [lines]);
+  const qty = (l: RequestOrderLine) => picked[l.key] ?? queued[l.key]?.cartons ?? 1;
+  const stampOf = (l: RequestOrderLine) => stamps[l.key] ?? queued[l.key]?.stamp ?? l.stamp;
+  const bump = (l: RequestOrderLine, d: number) => setPicked((m) => ({ ...m, [l.key]: Math.max(0, qty(l) + d) }));
 
-  const sheet = buildOrderSheet(
-    lines.map((l) => ({ variantId: l.key, name: l.name, distributor: l.distributor, stamp: stampOf(l), cartons: qty(l.key) })),
-  );
-  const total = sheet.reduce((n, g) => n + g.cartons, 0);
-  const infoOf = new Map<string, SheetLineInfo>(lines.map((l) => [l.key, { cartonSize: 5, productUrl: null }]));
-  const bump = (key: string, d: number) => setQty((q) => ({ ...q, [key]: Math.max(0, (q[key] ?? 1) + d) }));
-  const onUnit = (distributor: string, unit: QtyUnit) => {
-    setUnitOver((m) => ({ ...m, [distributor]: unit }));
-    fetcher.submit({ intent: "unit", store, distributor, unit }, { method: "post" });
-  };
+  const payload = lines.map((l) => ({
+    key: l.key,
+    name: l.name,
+    distributor: l.distributor,
+    stamp: stampOf(l),
+    cartons: qty(l),
+    requestIds: l.requestIds,
+  }));
+  const chosen = payload.filter((l) => l.cartons > 0);
+  const perDistro = new Map<string, number>();
+  for (const l of chosen) perDistro.set(l.distributor, (perDistro.get(l.distributor) ?? 0) + l.cartons);
 
   return (
     <div className="work">
       <section className="card" style={{ minWidth: 0 }}>
         <div className="card-head" style={{ flexWrap: "wrap" }}>
           <div>
-            <h2 className="h" style={{ margin: 0, fontSize: 18 }}>Order for requests · {storeLabel}</h2>
-            <div className="muted" style={{ fontSize: 12 }}>New, Needs info, Order on request and Waiting on stock</div>
+            <h2 className="h" style={{ margin: 0, fontSize: 18 }}>To order · {storeLabel}</h2>
+            <div className="muted" style={{ fontSize: 12 }}>Pick cartons for each item, then send them to Reorder.</div>
           </div>
           <button type="button" className="btn" onClick={onClose}>Back to list</button>
         </div>
@@ -60,7 +56,7 @@ export function RequestOrder({
             <table>
               <thead>
                 <tr>
-                  <th>Item</th><th>Wanted</th><th>Stamp</th><th>Order</th>
+                  <th>Item</th><th>Wanted</th><th>Stamp</th><th>Cartons</th>
                 </tr>
               </thead>
               <tbody>
@@ -69,7 +65,10 @@ export function RequestOrder({
                   return (
                     <tr key={l.key}>
                       <td style={{ minWidth: 220 }}>
-                        <div style={{ fontWeight: 600 }}>{l.name}</div>
+                        <div style={{ fontWeight: 600 }}>
+                          {l.name}
+                          {queued[l.key] && <span className="pill ok" style={{ marginLeft: 6, fontSize: 10, padding: "1px 6px" }}>ON REORDER</span>}
+                        </div>
                         <div className="muted" style={{ fontSize: 12 }}>
                           {l.distributor === "No distributor" ? <span className="pill warn" style={{ fontSize: 10, padding: "1px 6px" }}>NO DISTRIBUTOR</span> : l.distributor}
                           {" · "}
@@ -89,9 +88,9 @@ export function RequestOrder({
                       </td>
                       <td>
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <button type="button" className="stepper" aria-label="One carton less" onClick={() => bump(l.key, -1)}>−</button>
-                          <span className="mono qty">{qty(l.key)}</span>
-                          <button type="button" className="stepper" aria-label="One carton more" onClick={() => bump(l.key, 1)}>+</button>
+                          <button type="button" className="stepper" aria-label="One carton less" onClick={() => bump(l, -1)}>−</button>
+                          <span className="mono qty">{qty(l)}</span>
+                          <button type="button" className="stepper" aria-label="One carton more" onClick={() => bump(l, 1)}>+</button>
                         </div>
                       </td>
                     </tr>
@@ -103,32 +102,34 @@ export function RequestOrder({
         )}
       </section>
 
-      <OrderSheet
-        sheet={sheet}
-        total={total}
-        store={storeLabel}
-        siteOf={siteOf}
-        infoOf={infoOf}
-        units={units}
-        onUnit={onUnit}
-        emptyText="Set cartons with + to build the order. It’s grouped here by distributor."
-        groupActions={(g) => <MarkOrdered ids={g.lines.flatMap((l) => byKey.get(l.variantId)?.requestIds ?? [])} store={store} />}
-      />
+      <section className="card sheet">
+        <div className="card-head">
+          <h2 className="h" style={{ margin: 0, fontSize: 18 }}>Send to Reorder</h2>
+          <span className="idx">{chosen.reduce((n, l) => n + l.cartons, 0)} CTN</span>
+        </div>
+        {perDistro.size === 0 ? (
+          <p className="muted" style={{ fontSize: 14 }}>Set cartons with + for the items you want to order.</p>
+        ) : (
+          <ul className="sheet-lines">
+            {[...perDistro.entries()].map(([d, n]) => (
+              <li key={d}>
+                <span className="mono glow-c">{n}×</span> {d}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="muted" style={{ fontSize: 12 }}>
+          They’ll show under “Requests” in each distributor on the Reorder order sheet and go into that distributor’s Claude prompt.
+        </p>
+        <Form method="post">
+          <input type="hidden" name="intent" value="queue" />
+          <input type="hidden" name="store" value={store} />
+          <input type="hidden" name="lines" value={JSON.stringify(payload)} />
+          <button className="btn primary" type="submit" disabled={busy || lines.length === 0} style={{ width: "100%" }}>
+            {busy ? "Sending…" : "Send to Reorder"}
+          </button>
+        </Form>
+      </section>
     </div>
-  );
-}
-
-function MarkOrdered({ ids, store }: { ids: number[]; store: string }) {
-  const fetcher = useFetcher<{ ok?: string }>();
-  const busy = fetcher.state !== "idle";
-  return (
-    <fetcher.Form method="post" style={{ marginTop: 8 }}>
-      <input type="hidden" name="intent" value="ordered" />
-      <input type="hidden" name="store" value={store} />
-      <input type="hidden" name="ids" value={ids.join(",")} />
-      <button className="btn" type="submit" disabled={busy || !ids.length} style={{ width: "100%" }}>
-        {busy ? "Saving…" : `Checked out · mark ${ids.length} request${ids.length === 1 ? "" : "s"} Ordered`}
-      </button>
-    </fetcher.Form>
   );
 }
