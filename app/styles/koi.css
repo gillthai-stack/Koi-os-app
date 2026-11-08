@@ -227,3 +227,6 @@ select.field{appearance:auto}
 /* Customer request lines inside an order sheet group */
 .sheet-requests{margin-top:10px;padding-top:8px;border-top:1px dashed rgba(244,114,182,.35)}
 .stepper.mini{width:24px;height:24px;min-height:24px;font-size:14px;padding:0}
+.pill-button{cursor:pointer;font-family:'JetBrains Mono',monospace}
+.pill-button:hover{filter:brightness(1.2)}
+.link-row td{padding-top:0}
