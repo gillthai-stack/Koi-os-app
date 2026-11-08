@@ -176,6 +176,10 @@ export async function setOrderItemCartons(key: string, cartons: number, updatedB
   else await prisma.requestOrderItem.deleteMany({ where: { key } });
 }
 
+export async function setOrderItemStamp(key: string, stamp: "ONTARIO" | "FEDERAL", updatedBy: string) {
+  await prisma.requestOrderItem.updateMany({ where: { key }, data: { stamp, updatedBy } });
+}
+
 /** After checkout: the lines' requests become Ordered (and on the sheet), and the lines leave the order sheet. */
 export async function markOrderItemsOrdered(keys: string[], updatedBy: string) {
   const items = await prisma.requestOrderItem.findMany({ where: { key: { in: keys } } });
