@@ -32,3 +32,11 @@ services:
       # Customer requests: a Google service account key (JSON) that can read the request sheet.
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
+      # Daily 9 AM out-of-stock digest email (optional). GMAIL_APP_PASSWORD is a Google app password
+      # (myaccount.google.com/apppasswords) for GMAIL_USER. DIGEST_TO defaults to GMAIL_USER.
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: DIGEST_TO
+        sync: false
