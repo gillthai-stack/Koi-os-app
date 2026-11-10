@@ -1,6 +1,7 @@
 // Distributor orders: created and moved along from Gmail, or by hand on the Orders page.
 import type { DistroOrder, Prisma } from "@prisma/client";
 import prisma from "../db.server";
+import { advanceRequestsFromInvoice } from "./pickup.server";
 import { getMessage, gmailStatus, messageUrl, searchMessages } from "./gmail.server";
 import { MAIL_QUERY, describeEvent, matchOrder, parseMail, stageAfter, type Mail, type MailEvent, type OrderLine } from "./orderMail";
 
@@ -17,8 +18,20 @@ export type OrderStage = 1 | 2 | 3 | 4;
  * This is where open customer requests for the order's lines get moved along.
  */
 export async function onOrderStage(order: DistroOrder, stage: OrderStage): Promise<void> {
-  void order;
-  void stage;
+  const lines = linesOf(order);
+  if (!lines.length) return;
+  try {
+    await advanceRequestsFromInvoice({
+      store: order.store === "mississauga" || order.store === "brampton" ? order.store : null,
+      distributor: order.distributor,
+      lines,
+      stage: stage === 4 ? "delivered" : "shipped",
+      updatedBy: order.updatedBy ?? "orders",
+    });
+  } catch (e) {
+    // Never let a request update stop the order itself from moving.
+    console.warn(`[orders] moving requests for order ${order.id}: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 const uniq = (xs: string[]) => [...new Set(xs.filter(Boolean))];

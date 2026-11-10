@@ -25,6 +25,10 @@ React Router 7 (Shopify app template), Prisma + Postgres, hosted on Render.
 
 `render.yaml` is the blueprint. Secrets (`SHOPIFY_API_SECRET`, `DATABASE_URL`) are pasted into the Render dashboard, never committed. `npm run setup` runs migrations on start.
 
+## Daily digest
+
+At 9 AM Toronto the server builds the out-of-stock digest (0 pcs among each store's top 30 sellers and new items, by distributor) and shows it on the Digest page. To also get it by email, set `GMAIL_USER` and `GMAIL_APP_PASSWORD` (a Google app password) on Render; `DIGEST_TO` changes the recipient.
+
 ## Checks
 
 `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` (CI runs all of them).
