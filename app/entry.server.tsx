@@ -5,8 +5,12 @@ import { createReadableStreamFromReadable } from "@react-router/node";
 import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { startGmailWatcher } from "./lib/orders.server";
 
 export const streamTimeout = 5000;
+
+// Move distributor orders along from Gmail every few minutes while the server runs.
+startGmailWatcher();
 
 export default async function handleRequest(
   request: Request,

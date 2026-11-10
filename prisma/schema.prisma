@@ -139,3 +139,44 @@ model RequestOrderItem {
 
   @@index([store])
 }
+
+// An order placed on a distributor's site, tracked from Gmail (or added by hand) through
+// Awaiting payment (1) → Paid – waiting to ship (2) → On the way (3) → Delivered (4).
+model DistroOrder {
+  id          Int       @id @default(autoincrement())
+  distributor String
+  store       String? // mississauga | brampton
+  refs        String[] // order, invoice and sales order numbers, e.g. INV-718010, SO-707823, #1106698
+  amount      Float?
+  stage       Int       @default(1)
+  cancelled   Boolean   @default(false)
+  lines       Json      @default("[]") // [{ name, qty? }]
+  tracking    String[]
+  note        String?
+  emailUrl    String?
+  source      String    @default("gmail") // gmail | manual
+  paidAt      DateTime?
+  shippedAt   DateTime?
+  deliveredAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  updatedBy   String?
+
+  mails OrderMail[]
+
+  @@index([stage])
+}
+
+// Each Gmail message the tracker has read, so it is read once, with what it meant.
+model OrderMail {
+  id         String       @id // Gmail message id
+  kind       String? // order | invoice | payment | shipped | delivered | cancelled | null (not about orders)
+  summary    String?
+  orderId    Int?
+  order      DistroOrder? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  matched    Boolean      @default(false)
+  receivedAt DateTime
+  createdAt  DateTime     @default(now())
+
+  @@index([receivedAt])
+}
