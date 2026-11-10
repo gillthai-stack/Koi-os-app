@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction } from "react-router";
 import { Form, Link, redirect, useActionData, useFetcher, useLoaderData, useNavigation } from "react-router";
+import { MatchInvoice, ReadyToText } from "../components/Pickup";
 import { RequestOrder } from "../components/RequestOrder";
 import { Hero, Shell } from "../components/Shell";
 import prisma from "../db.server";
@@ -10,6 +11,8 @@ import { requireUser } from "../lib/auth.server";
 import { DISTRIBUTOR_SITES } from "../lib/distributors";
 import { KEEP_IN_STOCK_TAB, REQUEST_TABS, SHEET_NAME, sheetConfig } from "../lib/google.server";
 import { STORES } from "../lib/ordering";
+import { parseInvoiceLines } from "../lib/pickup";
+import { advanceRequestsFromInvoice, markTexted, previewInvoice } from "../lib/pickup.server";
 import {
   REQUEST_STATUSES,
   STATUS_GROUPS,
@@ -109,6 +112,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (form.has("notes")) data.notes = clean(form.get("notes"));
     const r = await prisma.customerRequest.update({ where: { id }, data: { ...data, updatedBy: user.username } });
     return { saved: id, sheetError: await pushToSheet(r) };
+  }
+
+  if (intent === "texted") {
+    const { request: r, sheetError } = await markTexted(Number(form.get("id")), user.username);
+    return { saved: r.id, sheetError };
+  }
+
+  if (intent === "invoice-preview" || intent === "invoice-apply") {
+    const lines = parseInvoiceLines(String(form.get("lines") ?? ""));
+    if (!lines.length) return { error: "Paste at least one item line." };
+    const stage = form.get("stage") === "shipped" ? "shipped" : "delivered";
+    const distributor = clean(form.get("distributor"));
+    if (intent === "invoice-preview") {
+      const matches = await previewInvoice({ store, distributor, lines, stage });
+      return {
+        matches: matches.map(({ request: r, line }) => ({ id: r.id, code: r.code, customer: r.customer, product: r.product, status: r.status, line: line.name })),
+      };
+    }
+    const onlyIds = String(form.get("ids") ?? "").split(",").map(Number).filter(Boolean);
+    return await advanceRequestsFromInvoice({ store, distributor, lines, stage, updatedBy: user.username, onlyIds });
   }
 
   if (intent === "queue") {
@@ -235,6 +258,8 @@ export default function Requests() {
         {result && "ok" in result && result.ok && <p className="glow-l" style={{ fontSize: 14 }}>{result.ok}</p>}
       </section>
 
+      <ReadyToText rows={data.requests.filter((r) => r.status === "Ready – set aside")} />
+
       <section className="card" style={{ minWidth: 0 }}>
         <div className="card-head" style={{ flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -268,6 +293,7 @@ export default function Requests() {
         )}
       </section>
 
+      <MatchInvoice store={data.store} />
         </>
       )}
 
