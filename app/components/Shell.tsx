@@ -32,6 +32,10 @@ export function Shell({ user, children }: { user: User; children: ReactNode }) {
             <span className="dot" />
             Requests
           </NavLink>
+          <NavLink to="/digest" className={({ isActive }) => `nav${isActive ? " on" : ""}`}>
+            <span className="dot" />
+            Digest
+          </NavLink>
           {user.role === "OWNER" && (
             <NavLink to="/team" className={({ isActive }) => `nav${isActive ? " on" : ""}`}>
               <span className="dot" />

@@ -5,6 +5,10 @@ import { createReadableStreamFromReadable } from "@react-router/node";
 import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { startDigestScheduler } from "./lib/digest.server";
+
+// Daily 9 AM out-of-stock digest.
+startDigestScheduler();
 
 export const streamTimeout = 5000;
 
