@@ -1,6 +1,6 @@
 // KOI//OS reorder page: top 30 sellers per store, filtered to what needs ordering,
 // with an order sheet grouped by distributor (GCore split by stamp).
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs, MetaFunction, ShouldRevalidateFunction } from "react-router";
 import { Link, redirect, useFetcher, useLoaderData, useNavigation } from "react-router";
 import { Hero, Shell } from "../../components/Shell";
@@ -77,6 +77,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const url = cleanSiteUrl(String(form.get("url") ?? ""));
     if (!vendor || !url) return { ok: false, error: "Add a working website link." };
     await saveDistributorLink(vendor, distributor, url, user.username);
+    // Optional: this item's own page on that site, so Claude can go straight to it.
+    const variantId = String(form.get("variantId") ?? "");
+    const productUrl = cleanSiteUrl(String(form.get("productUrl") ?? ""));
+    if (String(form.get("productUrl") ?? "").trim()) {
+      if (!productUrl || hostOf(productUrl) !== hostOf(url)) {
+        return { ok: false, vendor, distributor, url, error: "Site saved. The item link has to be on that same site." };
+      }
+      if (variantId.startsWith("gid://shopify/ProductVariant/")) await saveProductUrl(variantId, productUrl, user.username);
+    }
     return { ok: true, vendor, distributor, url };
   }
   if (form.get("intent") === "request-cartons") {
@@ -175,6 +184,7 @@ export default function Reorder() {
   const [filter, setFilter] = useState<Filter>("needs");
   const [over, setOver] = useState<Record<string, Override>>({});
   const [linked, setLinked] = useState<Record<string, LinkOverride>>({});
+  const [linkRow, setLinkRow] = useState<string | null>(null);
   const [unitOver, setUnitOver] = useState<Record<string, QtyUnit>>({});
   const onUnit = (distributor: string, unit: QtyUnit) => {
     setUnitOver((m) => ({ ...m, [distributor]: unit }));
@@ -411,13 +421,25 @@ export default function Reorder() {
                     </thead>
                     <tbody>
                       {shown.map((r) => (
-                        <tr key={r.variantId}>
+                        <Fragment key={r.variantId}>
+                        <tr>
                           <td className="mono muted">{r.rank ?? <span className="pill new">NEW</span>}</td>
                           <td style={{ minWidth: 220 }}>
                             <div style={{ fontWeight: 600 }}>{r.name}</div>
                             <div className="muted" style={{ fontSize: 12 }}>
                               {r.distributor}
-                              {!r.siteUrl && <span className="pill warn" style={{ marginLeft: 6, fontSize: 10, padding: "1px 6px" }}>NO DISTRO LINK</span>}
+                              {!r.siteUrl && (
+                                <button
+                                  type="button"
+                                  className="pill warn pill-button"
+                                  style={{ marginLeft: 6, fontSize: 10, padding: "1px 6px" }}
+                                  title="Add where you order this"
+                                  aria-expanded={linkRow === r.variantId}
+                                  onClick={() => setLinkRow(linkRow === r.variantId ? null : r.variantId)}
+                                >
+                                  NO DISTRO LINK
+                                </button>
+                              )}
                             </div>
                           </td>
                           <td className="mono">{r.sold30}</td>
@@ -448,6 +470,23 @@ export default function Reorder() {
                             </div>
                           </td>
                         </tr>
+                        {linkRow === r.variantId && !r.siteUrl && (
+                          <tr className="link-row">
+                            <td colSpan={7}>
+                              <LinkForm
+                                vendor={r.vendor}
+                                count={rows.filter((x) => x.vendor === r.vendor).length}
+                                variantId={r.variantId}
+                                itemName={r.name}
+                                onSaved={(l) => {
+                                  setLinked((m) => ({ ...m, [r.vendor]: l }));
+                                  setLinkRow(null);
+                                }}
+                              />
+                            </td>
+                          </tr>
+                        )}
+                        </Fragment>
                       ))}
                     </tbody>
                   </table>
@@ -480,14 +519,27 @@ function StatusPill({ status }: { status: ReorderRow["status"] }) {
   return <span className="pill ok">OK</span>;
 }
 
-function LinkForm({ vendor, count, onSaved }: { vendor: string; count: number; onSaved: (l: LinkOverride) => void }) {
+function LinkForm({
+  vendor,
+  count,
+  onSaved,
+  variantId,
+  itemName,
+}: {
+  vendor: string;
+  count: number;
+  onSaved: (l: LinkOverride) => void;
+  /** Opened from one item's row: also offers a link to that item's own page. */
+  variantId?: string;
+  itemName?: string;
+}) {
   const fetcher = useFetcher<typeof action>();
   const res = fetcher.data;
   const handled = useRef<unknown>(null);
   useEffect(() => {
     if (!res || handled.current === res) return;
     handled.current = res;
-    if ("url" in res && res.url && res.vendor === vendor) onSaved({ distributor: res.distributor, url: res.url });
+    if (res.ok && "url" in res && res.url && res.vendor === vendor) onSaved({ distributor: res.distributor, url: res.url });
   }, [res, vendor, onSaved]);
   return (
     <fetcher.Form method="post" className="inline-form sheet-group">
@@ -496,11 +548,17 @@ function LinkForm({ vendor, count, onSaved }: { vendor: string; count: number; o
       <div style={{ flex: "1 1 160px", minWidth: 0 }}>
         <div style={{ fontWeight: 600 }}>{vendor}</div>
         <div className="muted" style={{ fontSize: 12 }}>
-          {count} item{count === 1 ? "" : "s"} to order
+          {variantId ? `Saves the site for all ${count} ${vendor} item${count === 1 ? "" : "s"}` : `${count} item${count === 1 ? "" : "s"} to order`}
         </div>
       </div>
       <input className="field" name="distributor" list="koi-distros" placeholder="Distributor (e.g. Valor Distributions)" defaultValue={vendor} />
       <input className="field" name="url" placeholder="Ordering site link" inputMode="url" required />
+      {variantId && (
+        <>
+          <input type="hidden" name="variantId" value={variantId} />
+          <input className="field" name="productUrl" placeholder="This item’s page (optional)" inputMode="url" title={itemName} />
+        </>
+      )}
       <button className="btn primary" type="submit" disabled={fetcher.state !== "idle"}>
         {fetcher.state !== "idle" ? "Saving…" : "Save"}
       </button>
