@@ -32,6 +32,12 @@ services:
       # Customer requests: a Google service account key (JSON) that can read the request sheet.
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
+      # Order tracking: a Google OAuth client (Web application) so the owner can connect Gmail
+      # (read-only) on the Orders page. Redirect URI: https://koi-os-app.onrender.com/orders/gmail/callback
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
       # Daily 9 AM out-of-stock digest email (optional). GMAIL_APP_PASSWORD is a Google app password
       # (myaccount.google.com/apppasswords) for GMAIL_USER. DIGEST_TO defaults to GMAIL_USER.
       - key: GMAIL_USER

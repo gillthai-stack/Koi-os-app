@@ -230,3 +230,11 @@ select.field{appearance:auto}
 .pill-button{cursor:pointer;font-family:'JetBrains Mono',monospace}
 .pill-button:hover{filter:brightness(1.2)}
 .link-row td{padding-top:0}
+/* Orders board */
+.order-board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-items:start}
+.order-col{display:flex;flex-direction:column;gap:10px;min-width:0}
+.order-col-head{margin:0;font-size:15px;display:flex;justify-content:space-between;align-items:baseline}
+.order-card{padding:14px;min-width:0;overflow-wrap:anywhere}
+.order-card select.pill{font:inherit;font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;appearance:none}
+@media (max-width:1100px){.order-board{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:640px){.order-board{grid-template-columns:minmax(0,1fr)}}
