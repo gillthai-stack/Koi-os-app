@@ -209,7 +209,10 @@ export function startGmailWatcher() {
   const g = globalThis as { __koiGmailWatcher?: NodeJS.Timeout };
   if (g.__koiGmailWatcher || process.env.NODE_ENV !== "production") return;
   g.__koiGmailWatcher = setInterval(() => {
-    autoSyncGmail().then((err) => err && console.warn(`[orders] Gmail check: ${err}`));
+    // Catch everything: a database or Gmail hiccup must never take the whole server down.
+    autoSyncGmail()
+      .then((err) => err && console.warn(`[orders] Gmail check: ${err}`))
+      .catch((e) => console.error("[orders] Gmail check failed", e));
   }, 10 * 60_000);
   g.__koiGmailWatcher.unref?.();
 }
