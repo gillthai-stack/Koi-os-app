@@ -8,6 +8,13 @@ import { addDocumentResponseHeaders } from "./shopify.server";
 import { startGmailWatcher } from "./lib/orders.server";
 import { startDigestScheduler } from "./lib/digest.server";
 
+// Log stray async errors instead of letting Node exit, which Render shows as 502 Bad Gateway.
+const g = globalThis as { __koiRejectionGuard?: boolean };
+if (!g.__koiRejectionGuard) {
+  g.__koiRejectionGuard = true;
+  process.on("unhandledRejection", (reason) => console.error("[server] unhandled rejection", reason));
+}
+
 // Daily 9 AM out-of-stock digest.
 startDigestScheduler();
 
